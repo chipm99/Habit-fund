@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback } from "react";
+import { createClient } from '@supabase/supabase-js';
 
 const SUPABASE_URL = 'https://keenwhiygrrnxhllibxa.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_ZrftrM1kZGX3odvfJQG0Pw_jNriTgc6';
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // ── Supabase client ──────────────────────────────────────
 const supa = {
@@ -88,6 +90,68 @@ const S = {
   modal: { background: '#fff', borderRadius: '24px 24px 0 0', padding: '28px 24px', width: '100%', maxHeight: '85vh', overflowY: 'auto' },
 };
 
+// ── Login ────────────────────────────────────────────────
+function Login({ toast }) {
+  const [email, setEmail] = useState('');
+  const [sent, setSent] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  const sendLink = async () => {
+    if (!email.trim()) { toast('請輸入 Email'); return; }
+    setLoading(true);
+    const { error } = await supabase.auth.signInWithOtp({
+      email: email.trim(),
+      options: { emailRedirectTo: window.location.origin }
+    });
+    setLoading(false);
+    if (error) { toast('發送失敗：' + error.message); return; }
+    setSent(true);
+  };
+
+  if (sent) return (
+    <div style={{ ...S.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh' }}>
+      <div style={{ ...S.app, textAlign: 'center', paddingTop: 80 }}>
+        <div style={{ fontSize: 48, marginBottom: 24 }}>📬</div>
+        <div style={S.h2}>確認信已寄出</div>
+        <p style={{ ...S.muted, marginTop: 12, lineHeight: 1.7 }}>
+          請到 <strong>{email}</strong> 收取登入連結<br />點擊信件中的按鈕即可登入
+        </p>
+        <button style={{ ...S.btn('secondary'), marginTop: 24 }} onClick={() => setSent(false)}>重新發送</button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ ...S.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh' }}>
+      <div style={S.app}>
+        <div style={{ padding: '16px 0 36px' }}>
+          <div style={S.display}>好習慣基金<br /><em style={{ color: '#2D6A4F', fontStyle: 'italic' }}>Habit Fund</em></div>
+          <p style={{ ...S.muted, marginTop: 14, lineHeight: 1.7 }}>每一個你堅持的小習慣，<br />都能化成對世界的溫柔行動。</p>
+        </div>
+        <div style={S.card}>
+          <label style={S.label}>以 Email 登入 / 註冊</label>
+          <input
+            style={S.input}
+            type="email"
+            placeholder="your@email.com"
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && sendLink()}
+          />
+          <p style={{ ...S.muted, fontSize: 12, marginTop: 8 }}>我們會寄一封免密碼的登入連結到你的信箱</p>
+        </div>
+        <button
+          style={{ ...S.btn('primary'), width: '100%', marginTop: 8, justifyContent: 'center' }}
+          onClick={sendLink}
+          disabled={loading}
+        >
+          {loading ? '寄送中…' : '寄送登入連結 →'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Onboarding ───────────────────────────────────────────
 
 const GOAL_CATEGORIES = [
@@ -170,7 +234,7 @@ function GoalCard({ index, goal, onChange }) {
   );
 }
 
-function Onboarding({ onDone, toast }) {
+function Onboarding({ authUser, onDone, toast }) {
   const [step, setStep] = useState(0);
   const [name, setName] = useState('');
   // 最多 3 個目標
@@ -293,11 +357,11 @@ goal_index 對應上面目標的序號（從 0 開始）`;
     setLoading(true);
     try {
       const users = await supa.post('users', {
+        id: authUser.id,
         name: name.trim(),
         values_answers: { goals, schedule, obstacles, style }
       });
       const user = users[0];
-      localStorage.setItem('habit_user_id', user.id);
 
       // Resolve selected sids back to habit objects
       const validGoals = goals.filter(g => g.text && g.text.trim());
@@ -669,7 +733,7 @@ function Modal({ open, onClose, title, children }) {
 }
 
 // ── Main App ─────────────────────────────────────────────
-function MainApp({ user, toast }) {
+function MainApp({ user, toast, onSignOut }) {
   const [tab, setTab] = useState('today');
   const [habits, setHabits] = useState([]);
   const [checkins, setCheckins] = useState([]);
@@ -874,7 +938,11 @@ function MainApp({ user, toast }) {
     const v = user.values_answers || {};
     return (
       <div>
-        <div style={{ padding: '12px 0 24px' }}><div style={S.h2}>成長總覽</div><p style={S.muted}>你一直都在往前走</p></div>
+        <div style={{ ...S.row, padding: '12px 0 24px' }}>
+        <div><div style={S.h2}>成長總覽</div><p style={S.muted}>你一直都在往前走</p></div>
+        <div style={{ flex: 1 }} />
+        <button onClick={onSignOut} style={{ background: 'none', border: '1px solid #E8E4DF', borderRadius: 100, padding: '7px 16px', fontSize: 12, color: '#8A857F', cursor: 'pointer', fontFamily: 'inherit' }}>登出</button>
+      </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
           {[
             { label: '總打卡天數', val: totalDays, unit: '天' },
@@ -997,22 +1065,41 @@ function MainApp({ user, toast }) {
 
 // ── Root ─────────────────────────────────────────────────
 export default function App() {
+  const [authUser, setAuthUser] = useState(null);
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const { msg, show, toast } = useToast();
 
-  useEffect(() => {
-    (async () => {
-      const id = localStorage.getItem('habit_user_id');
-      if (id) {
-        try {
-          const users = await supa.get('users', `id=eq.${id}`);
-          if (users?.length) { setUser(users[0]); setLoading(false); return; }
-        } catch {}
-      }
-      setLoading(false);
-    })();
+  const loadProfile = useCallback(async (au) => {
+    setAuthUser(au);
+    try {
+      const users = await supa.get('users', `id=eq.${au.id}`);
+      setUser(users?.length ? users[0] : null);
+    } catch {
+      setUser(null);
+    }
+    setLoading(false);
   }, []);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) loadProfile(session.user);
+      else setLoading(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session) loadProfile(session.user);
+      else { setAuthUser(null); setUser(null); setLoading(false); }
+    });
+
+    return () => subscription.unsubscribe();
+  }, [loadProfile]);
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    setAuthUser(null);
+    setUser(null);
+  };
 
   if (loading) return (
     <div style={{ ...S.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh' }}>
@@ -1032,9 +1119,11 @@ export default function App() {
         fontSize: 14, zIndex: 999, transition: 'transform .3s ease', whiteSpace: 'nowrap'
       }}>{msg}</div>
 
-      {user
-        ? <MainApp user={user} toast={toast} />
-        : <Onboarding onDone={u => setUser(u)} toast={toast} />
+      {!authUser
+        ? <Login toast={toast} />
+        : user
+          ? <MainApp user={user} toast={toast} onSignOut={handleSignOut} />
+          : <Onboarding authUser={authUser} onDone={u => setUser(u)} toast={toast} />
       }
     </div>
   );
