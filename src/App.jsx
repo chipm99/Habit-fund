@@ -264,7 +264,7 @@ ${goalsText}
 ]
 goal_index 對應上面目標的序號（從 0 開始）`;
 
-        const res = await fetch('https://api.anthropic.com/v1/messages', {
+        const res = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
