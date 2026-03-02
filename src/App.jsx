@@ -274,6 +274,7 @@ goal_index 對應上面目標的序號（從 0 開始）`;
           })
         });
         const data = await res.json();
+        if (!res.ok || !data.content) throw new Error(data.error?.message || `API error ${res.status}`);
         let text = data.content.map(i => i.text || '').join('').replace(/```json|```/g, '').trim();
         setSuggestions(JSON.parse(text));
       } catch (e) {
