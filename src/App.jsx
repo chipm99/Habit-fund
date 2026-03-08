@@ -839,6 +839,13 @@ function MainApp({ user, toast, onSignOut }) {
     } catch { toast('新增失敗'); }
   };
 
+  const saveGoalLabel = async (habitId, goalLabel) => {
+    try {
+      await supa.patch('habits', `id=eq.${habitId}`, { goal_label: goalLabel || null });
+      await load();
+    } catch { toast('更新失敗'); }
+  };
+
   const deleteHabit = async (id) => {
     if (!confirm('確定要刪除這個習慣嗎？')) return;
     try { await supa.patch('habits', `id=eq.${id}`, { is_active: false }); await load(); toast('習慣已刪除'); } catch { toast('刪除失敗'); }
@@ -977,26 +984,60 @@ function MainApp({ user, toast, onSignOut }) {
         <div style={{ textAlign: 'center', padding: '48px 24px', color: '#8A857F' }}>
           <div style={{ fontSize: 40, marginBottom: 12 }}>✨</div><p>點擊右上角新增你的第一個習慣</p>
         </div>
-      ) : habits.map(h => {
-        const streak = getStreak(h.id, checkins);
-        const total = checkins.filter(c => c.habit_id === h.id).length;
-        return (
-          <div key={h.id} style={S.card}>
-            <div style={{ ...S.row, marginBottom: 10 }}>
-              <span style={{ background: diffBg(h.difficulty), color: diffColor(h.difficulty), padding: '3px 12px', borderRadius: 100, fontSize: 12, fontWeight: 500 }}>{diffLabel(h.difficulty)}</span>
-              <span style={{ ...S.muted, fontSize: 12, flex: 1, textAlign: 'right' }}>NT${h.fund_per_day}/天</span>
-              <button onClick={() => deleteHabit(h.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#8A857F', fontSize: 20, lineHeight: 1 }}>×</button>
-            </div>
-            <div style={{ fontWeight: 500, fontSize: 15 }}>{h.title}</div>
-            {h.description && <div style={{ fontSize: 13, color: '#8A857F', marginTop: 4 }}>{h.description}</div>}
-            <div style={{ ...S.row, marginTop: 12 }}>
-              <span style={{ ...S.muted, fontSize: 12 }}>🔥 連續 {streak} 天</span>
-              <span style={{ ...S.muted, fontSize: 12 }}>📅 累計 {total} 天</span>
-              <span style={{ ...S.muted, fontSize: 12 }}>💰 NT${total * h.fund_per_day}</span>
-            </div>
+      ) : Object.entries(groupByGoal(habits)).map(([goalLabel, groupHabits]) => (
+        <div key={goalLabel} style={{ marginBottom: 8 }}>
+          <div
+            onClick={() => toggleCollapse('habits-' + goalLabel)}
+            style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 4px', cursor: 'pointer', userSelect: 'none' }}
+          >
+            <span style={{ fontSize: 16 }}>{goalEmoji(goalLabel)}</span>
+            <span style={{ fontWeight: 500, fontSize: 14, flex: 1 }}>{goalLabel}</span>
+            <span style={{ color: '#8A857F', fontSize: 13 }}>{collapsed['habits-' + goalLabel] ? '▶' : '▼'}</span>
           </div>
-        );
-      })}
+          {!collapsed['habits-' + goalLabel] && groupHabits.map(h => {
+            const freq = h.frequency || { type: 'daily' };
+            const isWeekly = freq.type === 'weekly';
+            const streak = isWeekly
+              ? getWeeklyStreak(h.id, checkins, freq.times)
+              : getStreak(h.id, checkins);
+            const total = checkins.filter(c => c.habit_id === h.id).length;
+            const userGoals = (user.values_answers?.goals || []).filter(g => g.text?.trim());
+            return (
+              <div key={h.id} style={S.card}>
+                <div style={{ ...S.row, marginBottom: 10 }}>
+                  <span style={{ background: diffBg(h.difficulty), color: diffColor(h.difficulty), padding: '3px 12px', borderRadius: 100, fontSize: 12, fontWeight: 500 }}>{diffLabel(h.difficulty)}</span>
+                  <span style={{ ...S.muted, fontSize: 12, flex: 1, textAlign: 'right' }}>
+                    {isWeekly ? `NT$${h.fund_per_day}/次 · 每週${freq.times}次` : `NT$${h.fund_per_day}/天`}
+                  </span>
+                  <button onClick={() => deleteHabit(h.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#8A857F', fontSize: 20, lineHeight: 1 }}>×</button>
+                </div>
+                <div style={{ fontWeight: 500, fontSize: 15 }}>{h.title}</div>
+                {h.description && <div style={{ fontSize: 13, color: '#8A857F', marginTop: 4 }}>{h.description}</div>}
+                <div style={{ ...S.row, marginTop: 12 }}>
+                  <span style={{ ...S.muted, fontSize: 12 }}>🔥 連續 {streak}{isWeekly ? '週' : '天'}</span>
+                  <span style={{ ...S.muted, fontSize: 12 }}>📅 累計 {total} 次</span>
+                  <span style={{ ...S.muted, fontSize: 12 }}>💰 NT${total * h.fund_per_day}</span>
+                </div>
+                {userGoals.length > 0 && (
+                  <div style={{ marginTop: 12 }}>
+                    <label style={S.label}>歸屬目標</label>
+                    <select
+                      style={{ ...S.input, marginTop: 4 }}
+                      value={h.goal_label || ''}
+                      onChange={e => saveGoalLabel(h.id, e.target.value)}
+                    >
+                      <option value="">（未分組）</option>
+                      {userGoals.map(g => (
+                        <option key={g.text} value={g.text}>{g.text}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ))}
     </div>
   );
 
