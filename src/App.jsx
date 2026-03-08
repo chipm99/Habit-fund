@@ -780,6 +780,29 @@ function MainApp({ user, toast, onSignOut }) {
   const [fundUses, setFundUses] = useState([]);
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({});
+  const [collapsed, setCollapsed] = useState({});
+  const toggleCollapse = (key) => setCollapsed(s => ({ ...s, [key]: !s[key] }));
+
+  const groupByGoal = (items) => {
+    const groups = {};
+    for (const h of items) {
+      const key = h.goal_label || '其他';
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(h);
+    }
+    // Put '其他' last
+    const ordered = {};
+    for (const k of Object.keys(groups).filter(k => k !== '其他')) ordered[k] = groups[k];
+    if (groups['其他']) ordered['其他'] = groups['其他'];
+    return ordered;
+  };
+
+  const goalEmoji = (label) => {
+    const v = user.values_answers || {};
+    const g = (v.goals || []).find(g => g.text === label);
+    if (!g) return '📌';
+    return GOAL_CATEGORIES.find(c => c.label === g.category)?.emoji || '🎯';
+  };
 
   const load = useCallback(async () => {
     const [h, c, f] = await Promise.all([
@@ -868,27 +891,67 @@ function MainApp({ user, toast, onSignOut }) {
           </div>
         </div>
 
-        <div style={S.card}>
-          {habits.map(h => {
-            const done = todayCheckins.has(h.id);
-            const streak = getStreak(h.id, checkins);
-            return (
-              <div key={h.id} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 0', borderBottom: '1px solid #E8E4DF' }}>
-                <button onClick={() => toggleCheckin(h.id, done)} style={{
-                  width: 40, height: 40, borderRadius: '50%', flexShrink: 0,
-                  border: `2px solid ${done ? '#2D6A4F' : '#E8E4DF'}`,
-                  background: done ? '#2D6A4F' : 'none', cursor: 'pointer',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', color: done ? '#fff' : 'transparent', fontSize: 16
-                }}>✓</button>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 500, opacity: done ? 0.4 : 1, textDecoration: done ? 'line-through' : 'none' }}>{h.title}</div>
-                  <div style={{ fontSize: 12, color: '#8A857F', marginTop: 2 }}>NT${h.fund_per_day}/天 · {diffLabel(h.difficulty)}</div>
-                </div>
-                {streak > 0 && <div style={{ background: '#FDF3E3', color: '#B5935A', padding: '4px 10px', borderRadius: 100, fontSize: 12, fontWeight: 500, whiteSpace: 'nowrap' }}>🔥 {streak}天</div>}
+        {Object.entries(groupByGoal(habits)).map(([goalLabel, groupHabits]) => (
+          <div key={goalLabel} style={{ marginBottom: 8 }}>
+            <div
+              onClick={() => toggleCollapse('today-' + goalLabel)}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 4px', cursor: 'pointer', userSelect: 'none' }}
+            >
+              <span style={{ fontSize: 16 }}>{goalEmoji(goalLabel)}</span>
+              <span style={{ fontWeight: 500, fontSize: 14, flex: 1 }}>{goalLabel}</span>
+              <span style={{ color: '#8A857F', fontSize: 13 }}>{collapsed['today-' + goalLabel] ? '▶' : '▼'}</span>
+            </div>
+            {!collapsed['today-' + goalLabel] && (
+              <div style={S.card}>
+                {groupHabits.map(h => {
+                  const freq = h.frequency || { type: 'daily' };
+                  const isWeekly = freq.type === 'weekly';
+                  const weeklyCount = isWeekly ? getWeeklyCount(h.id, checkins) : 0;
+                  const weeklyDone = isWeekly && weeklyCount >= freq.times;
+                  const done = isWeekly ? weeklyDone : todayCheckins.has(h.id);
+                  const streak = isWeekly
+                    ? getWeeklyStreak(h.id, checkins, freq.times)
+                    : getStreak(h.id, checkins);
+                  return (
+                    <div key={h.id} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 0', borderBottom: '1px solid #E8E4DF' }}>
+                      <button
+                        onClick={() => {
+                          if (isWeekly && weeklyDone && !todayCheckins.has(h.id)) return; // can't uncheck weekly via today
+                          toggleCheckin(h.id, isWeekly ? todayCheckins.has(h.id) : done);
+                        }}
+                        style={{
+                          width: 40, height: 40, borderRadius: '50%', flexShrink: 0,
+                          border: `2px solid ${done ? '#2D6A4F' : '#E8E4DF'}`,
+                          background: done ? '#2D6A4F' : 'none', cursor: (isWeekly && weeklyDone && !todayCheckins.has(h.id)) ? 'default' : 'pointer',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center', color: done ? '#fff' : 'transparent', fontSize: 16
+                        }}>✓</button>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 500, opacity: done ? 0.4 : 1, textDecoration: done ? 'line-through' : 'none' }}>{h.title}</div>
+                        {isWeekly ? (
+                          <div style={{ marginTop: 6 }}>
+                            <div style={{ fontSize: 12, color: '#8A857F', marginBottom: 4 }}>
+                              NT${h.fund_per_day}/次 · {weeklyCount} / {freq.times} 次（本週）
+                            </div>
+                            <div style={{ background: '#E8E4DF', borderRadius: 100, height: 4, overflow: 'hidden', maxWidth: 120 }}>
+                              <div style={{ background: '#2D6A4F', height: 4, borderRadius: 100, width: `${Math.min(100, weeklyCount / freq.times * 100)}%`, transition: 'width .4s ease' }} />
+                            </div>
+                          </div>
+                        ) : (
+                          <div style={{ fontSize: 12, color: '#8A857F', marginTop: 2 }}>NT${h.fund_per_day}/天 · {diffLabel(h.difficulty)}</div>
+                        )}
+                      </div>
+                      {streak > 0 && (
+                        <div style={{ background: '#FDF3E3', color: '#B5935A', padding: '4px 10px', borderRadius: 100, fontSize: 12, fontWeight: 500, whiteSpace: 'nowrap' }}>
+                          🔥 {streak}{isWeekly ? '週' : '天'}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-            );
-          })}
-        </div>
+            )}
+          </div>
+        ))}
 
         <div style={{ ...S.card, display: 'flex', alignItems: 'center' }}>
           <div>
