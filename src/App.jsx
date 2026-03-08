@@ -1036,6 +1036,7 @@ function MainApp({ user, toast, onSignOut }) {
   const [form, setForm] = useState({});
   const [collapsed, setCollapsed] = useState({});
   const toggleCollapse = (key) => setCollapsed(s => ({ ...s, [key]: !s[key] }));
+  const [showCapWarning, setShowCapWarning] = useState(false);
 
   const groupByGoal = (items) => {
     const groups = {};
@@ -1232,7 +1233,10 @@ function MainApp({ user, toast, onSignOut }) {
       <div style={{ ...S.row, padding: '12px 0 24px' }}>
         <div><div style={S.h2}>習慣管理</div><p style={S.muted}>管理你的所有習慣</p></div>
         <div style={{ flex: 1 }} />
-        <button style={{ ...S.btn('primary'), padding: '9px 18px', fontSize: 13 }} onClick={() => setModal('add')}>+ 新增</button>
+        <button style={{ ...S.btn('primary'), padding: '9px 18px', fontSize: 13 }} onClick={() => {
+          if (habits.length >= 5) { setShowCapWarning(true); }
+          else setModal('add');
+        }}>+ 新增</button>
       </div>
       {habits.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '48px 24px', color: '#8A857F' }}>
@@ -1404,6 +1408,31 @@ function MainApp({ user, toast, onSignOut }) {
           </button>
         ))}
       </nav>
+
+      {/* Habit Cap Warning */}
+      {showCapWarning && (
+        <div style={S.modalBg} onClick={e => e.target === e.currentTarget && setShowCapWarning(false)}>
+          <div style={S.modal}>
+            <div style={{ width: 40, height: 4, background: '#E8E4DF', borderRadius: 2, margin: '0 auto 24px' }} />
+            <div style={{ ...S.h2, marginBottom: 8 }}>你已有 {habits.length} 個習慣</div>
+            <p style={{ ...S.muted, fontSize: 13, marginBottom: 16, lineHeight: 1.7 }}>
+              建立習慣的科學建議：先穩固現有習慣，再加入新的。<br />「一次想改太多」是最常見的失敗原因。
+            </p>
+            <div style={{ ...S.card, marginBottom: 16 }}>
+              {habits.map(h => (
+                <div key={h.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid #E8E4DF' }}>
+                  <span style={{ fontSize: 16 }}>{'🟢'}</span>
+                  <span style={{ fontSize: 14, flex: 1 }}>{h.title}</span>
+                </div>
+              ))}
+            </div>
+            <div style={S.row}>
+              <button style={{ ...S.btn('secondary'), flex: 1 }} onClick={() => setShowCapWarning(false)}>先不加了</button>
+              <button style={{ ...S.btn('primary'), flex: 1 }} onClick={() => { setShowCapWarning(false); setModal('add'); }}>我了解，繼續新增</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Add Habit Modal */}
       {modal === 'add' && (
