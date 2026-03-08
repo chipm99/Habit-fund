@@ -287,6 +287,9 @@ function Onboarding({ authUser, onDone, toast }) {
   const [suggestions, setSuggestions] = useState([]);
   const [selected, setSelected] = useState(new Set());
   const [loading, setLoading] = useState(false);
+  const [smartReviews, setSmartReviews] = useState(null); // null | Array<{specific,measurable,timeBound,identity,rewrite}>
+  const [smartIdentities, setSmartIdentities] = useState([]); // user-edited identity per goal
+  const [smartMeasurables, setSmartMeasurables] = useState([]); // user-filled measurable per goal
 
   const toggleArr = (arr, setArr) => v =>
     setArr(a => a.includes(v) ? a.filter(x => x !== v) : [...a, v]);
@@ -389,7 +392,51 @@ goal_index 對應上面目標的序號（從 0 開始）`;
       setLoading(false);
       return;
     }
+    if (step === 1) {
+      // Trigger SMART review before proceeding to step 2
+      const validGoals = goals.filter(g => g.text.trim());
+      setLoading(true);
+      try {
+        const reviews = await callSmartReview(validGoals);
+        setSmartReviews(reviews);
+        setSmartIdentities(reviews.map(r => r.identity || ''));
+        setSmartMeasurables(reviews.map(r => r.measurable || ''));
+      } catch (e) {
+        console.error(e);
+        toast('目標分析失敗，請重試');
+      }
+      setLoading(false);
+      return;
+    }
     setStep(s => s + 1);
+  };
+
+  const confirmSmartReview = () => {
+    const validGoals = goals.filter(g => g.text.trim());
+    // Check all measurables are filled
+    const missing = smartMeasurables.findIndex((m, i) => !m.trim());
+    if (missing !== -1) {
+      toast(`請填寫目標 ${missing + 1} 的可衡量指標`);
+      return;
+    }
+    // Merge identity and smart into goals
+    const updatedGoals = goals.map(g => {
+      const vi = validGoals.findIndex(vg => vg.text === g.text);
+      if (vi === -1) return g;
+      const review = smartReviews[vi];
+      return {
+        ...g,
+        identity: smartIdentities[vi],
+        smart: {
+          specific: review.specific,
+          measurable: smartMeasurables[vi],
+          timeBound: review.timeBound,
+        }
+      };
+    });
+    setGoals(updatedGoals);
+    setSmartReviews(null);
+    setStep(2);
   };
 
   const confirmHabits = async () => {
@@ -702,20 +749,88 @@ goal_index 對應上面目標的序號（從 0 開始）`;
       )}
 
       <div style={S.app}>
-        {step === 4 ? <Step4 /> : stepContent[step]}
+        {step === 4 ? <Step4 /> : step === 1 && smartReviews !== null ? (
+          // ── SMART Review overlay ──
+          <div>
+            <div style={{ padding: '8px 0 16px' }}>
+              <p style={{ ...S.muted, fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 500 }}>目標審視</p>
+              <div style={{ ...S.h2, marginTop: 6 }}>讓目標更清晰</div>
+              <p style={{ ...S.muted, fontSize: 13, marginTop: 6 }}>AI 幫你確認目標是否具體可執行</p>
+            </div>
+            {goals.filter(g => g.text.trim()).map((g, i) => {
+              const review = smartReviews[i];
+              if (!review) return null;
+              const needsMeasurable = !review.measurable;
+              return (
+                <div key={i} style={{ ...S.card, marginBottom: 14 }}>
+                  <div style={{ fontWeight: 500, fontSize: 15, marginBottom: 12 }}>
+                    {GOAL_CATEGORIES.find(c => c.label === g.category)?.emoji || '🎯'} {g.text}
+                  </div>
+                  {review.rewrite && (
+                    <div style={{ background: '#FDF3E3', border: '1px solid #F0D9B5', borderRadius: 10, padding: '10px 14px', marginBottom: 12, fontSize: 13, color: '#B5935A' }}>
+                      💡 建議改寫：「{review.rewrite}」
+                    </div>
+                  )}
+                  {[
+                    { key: 'specific', label: 'S 具體', value: review.specific },
+                    { key: 'measurable', label: 'M 可衡量', value: review.measurable, required: true },
+                    { key: 'timeBound', label: 'T 有時限', value: review.timeBound },
+                  ].map(({ key, label, value, required }) => (
+                    <div key={key} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 10 }}>
+                      <span style={{ fontSize: 16, flexShrink: 0 }}>{value ? '✅' : '❌'}</span>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 12, fontWeight: 500, color: '#8A857F', marginBottom: 3 }}>{label}</div>
+                        {required && !value ? (
+                          <input
+                            style={{ ...S.input, fontSize: 13 }}
+                            placeholder="請填入具體數字或標準，例：每週跑 3 次、體重降 5kg"
+                            value={smartMeasurables[i] || ''}
+                            onChange={e => setSmartMeasurables(arr => arr.map((v, idx) => idx === i ? e.target.value : v))}
+                          />
+                        ) : (
+                          <div style={{ fontSize: 13, color: value ? '#1A1714' : '#8A857F' }}>
+                            {value || '未偵測到，請在目標描述中補充'}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                  <div style={{ marginTop: 14, borderTop: '1px solid #E8E4DF', paddingTop: 12 }}>
+                    <label style={S.label}>身份認同句</label>
+                    <input
+                      style={{ ...S.input, marginTop: 6 }}
+                      value={smartIdentities[i] || ''}
+                      onChange={e => setSmartIdentities(arr => arr.map((v, idx) => idx === i ? e.target.value : v))}
+                      placeholder="我是一個..."
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : stepContent[step]}
         <div style={{ ...S.row, marginTop: 20 }}>
-          {step > 0 && step < 4 && (
-            <button style={S.btn('secondary')} onClick={() => setStep(s => s - 1)}>← 返回</button>
-          )}
-          {step < 4 && (
-            <button style={{ ...S.btn('primary'), flex: 1 }} onClick={next} disabled={loading}>
-              {step === 3 ? '生成我的習慣計劃 ✦' : '繼續 →'}
-            </button>
-          )}
-          {step === 4 && !loading && (
-            <button style={{ ...S.btn('primary'), flex: 1 }} onClick={confirmHabits}>
-              開始我的旅程 →
-            </button>
+          {step === 1 && smartReviews !== null ? (
+            <>
+              <button style={S.btn('secondary')} onClick={() => setSmartReviews(null)}>← 返回</button>
+              <button style={{ ...S.btn('primary'), flex: 1 }} onClick={confirmSmartReview}>確認目標 →</button>
+            </>
+          ) : (
+            <>
+              {step > 0 && step < 4 && (
+                <button style={S.btn('secondary')} onClick={() => setStep(s => s - 1)}>← 返回</button>
+              )}
+              {step < 4 && (
+                <button style={{ ...S.btn('primary'), flex: 1 }} onClick={next} disabled={loading}>
+                  {loading ? '分析中…' : step === 3 ? '生成我的習慣計劃 ✦' : '繼續 →'}
+                </button>
+              )}
+              {step === 4 && !loading && (
+                <button style={{ ...S.btn('primary'), flex: 1 }} onClick={confirmHabits}>
+                  開始我的旅程 →
+                </button>
+              )}
+            </>
           )}
         </div>
       </div>
