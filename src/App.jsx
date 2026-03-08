@@ -934,6 +934,8 @@ function AddHabitModal({ user, onClose, onSaved, toast }) {
   const [selected, setSelected] = useState(new Set());
   const [loading, setLoading] = useState(false);
   const [freqMap, setFreqMap] = useState({}); // idx -> {type, times}
+  const [cueMap, setCueMap] = useState({});   // idx -> string
+  const [rewardMap, setRewardMap] = useState({}); // idx -> string
   const [newGoalReview, setNewGoalReview] = useState(null); // SMART review for new goal
   const [newGoalIdentity, setNewGoalIdentity] = useState('');
   const [newGoalMeasurable, setNewGoalMeasurable] = useState('');
@@ -947,6 +949,7 @@ function AddHabitModal({ user, onClose, onSaved, toast }) {
 
 目標：${goal.category ? `【${goal.category}】` : ''}${goal.text}
 ${goal.timePerDay ? `每天可投入時間：${goal.timePerDay}` : ''}
+${goal.identity ? `身份認同：${goal.identity}` : ''}
 
 請回傳純 JSON 陣列（不含 markdown）：
 [
@@ -956,7 +959,9 @@ ${goal.timePerDay ? `每天可投入時間：${goal.timePerDay}` : ''}
     "why": "如何幫助達成目標（1句話）",
     "difficulty": "easy|medium|hard",
     "suggested_frequency": "daily|weekly",
-    "suggested_times": 3
+    "suggested_times": 3,
+    "cue": "習慣堆疊觸發時機，格式：在「___」之後（10字以內，例：早上刷牙後）",
+    "reward": "完成後的即時小獎勵（10字以內，例：喝一杯喜歡的飲料）"
   }
 ]
 suggested_frequency 為 weekly 時，suggested_times 為每週建議次數（1-7）。`;
@@ -978,6 +983,13 @@ suggested_frequency 為 weekly 時，suggested_times 為每週建議次數（1-7
           : { type: 'daily' };
       });
       setFreqMap(fm);
+      const cm = {}, rm = {};
+      JSON.parse(text).forEach((s, i) => {
+        cm[i] = s.cue || '';
+        rm[i] = s.reward || '';
+      });
+      setCueMap(cm);
+      setRewardMap(rm);
     } catch (e) {
       console.error(e);
       toast('建議生成失敗，請重試');
@@ -1039,10 +1051,18 @@ suggested_frequency 為 weekly 時，suggested_times 為每週建議次數（1-7
       for (const idx of selected) {
         const h = suggestions[idx];
         const freq = freqMap[idx] || { type: 'daily' };
+        const cue = cueMap[idx] || '';
+        const reward = rewardMap[idx] || '';
+        const descParts = [
+          h.description,
+          h.why ? h.why : null,
+          cue ? `觸發：${cue}` : null,
+          reward ? `獎勵：${reward}` : null,
+        ].filter(Boolean);
         await supa.post('habits', {
           user_id: user.id,
           title: h.title,
-          description: `${h.description}${h.why ? '｜' + h.why : ''}`,
+          description: descParts.join('｜'),
           difficulty: h.difficulty,
           fund_per_day: diffFund(h.difficulty),
           goal_label: goal.text,
@@ -1235,8 +1255,29 @@ suggested_frequency 為 weekly 時，suggested_times 為每週建議次數（1-7
                       <div style={{ fontWeight: 600, marginBottom: 4 }}>{h.title}</div>
                       <div style={{ fontSize: 13, color: '#444', lineHeight: 1.6, marginBottom: 8 }}>{h.description}</div>
                       {h.why && <div style={{ fontSize: 12, color: '#2D6A4F', background: '#D8F3DC', padding: '4px 10px', borderRadius: 8, display: 'inline-block', marginBottom: 10 }}>💡 {h.why}</div>}
-                      {/* Frequency selector — always visible */}
+                      {/* Cue + Reward */}
                       <div onClick={e => e.stopPropagation()} style={{ marginTop: 8, borderTop: '1px solid #E8E4DF', paddingTop: 10 }}>
+                        <div style={{ marginBottom: 10 }}>
+                          <label style={S.label}>觸發提示（習慣堆疊）</label>
+                          <input
+                            style={{ ...S.input, fontSize: 13, marginTop: 4 }}
+                            placeholder="在「___」之後，我會做這個習慣"
+                            value={cueMap[idx] || ''}
+                            onChange={e => setCueMap(m => ({ ...m, [idx]: e.target.value }))}
+                          />
+                        </div>
+                        <div>
+                          <label style={S.label}>即時小獎勵（選填）</label>
+                          <input
+                            style={{ ...S.input, fontSize: 13, marginTop: 4 }}
+                            placeholder="完成後：例如喝一杯喜歡的飲料"
+                            value={rewardMap[idx] || ''}
+                            onChange={e => setRewardMap(m => ({ ...m, [idx]: e.target.value }))}
+                          />
+                        </div>
+                      </div>
+                      {/* Frequency selector — always visible */}
+                      <div onClick={e => e.stopPropagation()} style={{ marginTop: 10 }}>
                         <label style={S.label}>頻率</label>
                         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
                           <div style={S.chip(freq.type === 'daily')}
