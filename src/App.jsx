@@ -1320,6 +1320,15 @@ function MainApp({ user, toast, onSignOut }) {
   const toggleCollapse = (key) => setCollapsed(s => ({ ...s, [key]: !s[key] }));
   const [showCapWarning, setShowCapWarning] = useState(false);
 
+  const parseDesc = (raw) => {
+    if (!raw) return { desc: '', cue: '', reward: '' };
+    const parts = raw.split('｜');
+    const desc = parts[0] || '';
+    const cue = parts.find(p => p.startsWith('觸發：'))?.replace('觸發：', '') || '';
+    const reward = parts.find(p => p.startsWith('獎勵：'))?.replace('獎勵：', '') || '';
+    return { desc, cue, reward };
+  };
+
   const groupByGoal = (items) => {
     const groups = {};
     for (const h of items) {
@@ -1552,7 +1561,16 @@ function MainApp({ user, toast, onSignOut }) {
                   <button onClick={() => deleteHabit(h.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#8A857F', fontSize: 20, lineHeight: 1 }}>×</button>
                 </div>
                 <div style={{ fontWeight: 500, fontSize: 15 }}>{h.title}</div>
-                {h.description && <div style={{ fontSize: 13, color: '#8A857F', marginTop: 4 }}>{h.description}</div>}
+                {(() => {
+                  const { desc, cue, reward } = parseDesc(h.description);
+                  return (
+                    <>
+                      {desc && <div style={{ fontSize: 13, color: '#8A857F', marginTop: 4 }}>{desc}</div>}
+                      {cue && <div style={{ fontSize: 12, color: '#2D6A4F', marginTop: 4 }}>⚡ 觸發：{cue}</div>}
+                      {reward && <div style={{ fontSize: 12, color: '#B5935A', marginTop: 2 }}>🎁 完成後：{reward}</div>}
+                    </>
+                  );
+                })()}
                 <div style={{ ...S.row, marginTop: 12 }}>
                   <span style={{ ...S.muted, fontSize: 12 }}>🔥 連續 {streak}{isWeekly ? '週' : '天'}</span>
                   <span style={{ ...S.muted, fontSize: 12 }}>📅 累計 {total} 次</span>
