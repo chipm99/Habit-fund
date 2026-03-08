@@ -772,6 +772,260 @@ function Modal({ open, onClose, title, children }) {
   );
 }
 
+// ── Add Habit Modal (AI-assisted) ────────────────────────
+function AddHabitModal({ user, onClose, onSaved, toast }) {
+  const [step, setStep] = useState(0); // 0=choose, 1=pick/create goal, 2=suggestions
+  const [mode, setMode] = useState(null); // 'existing' | 'new'
+  const [selectedGoal, setSelectedGoal] = useState(null); // {text, category}
+  const [newGoal, setNewGoal] = useState({ category: '', text: '', timePerDay: '' });
+  const [suggestions, setSuggestions] = useState([]);
+  const [selected, setSelected] = useState(new Set());
+  const [loading, setLoading] = useState(false);
+  const [freqMap, setFreqMap] = useState({}); // idx -> {type, times}
+
+  const userGoals = (user.values_answers?.goals || []).filter(g => g.text?.trim());
+
+  const generateSuggestions = async (goal) => {
+    setStep(2); setLoading(true);
+    try {
+      const prompt = `你是習慣設計師。請針對以下單一目標，設計 5 個每日或每週微習慣。
+
+目標：${goal.category ? `【${goal.category}】` : ''}${goal.text}
+${goal.timePerDay ? `每天可投入時間：${goal.timePerDay}` : ''}
+
+請回傳純 JSON 陣列（不含 markdown）：
+[
+  {
+    "title": "習慣名稱（10字以內）",
+    "description": "具體執行方式：什麼時候、用什麼工具、做什麼、做多久",
+    "why": "如何幫助達成目標（1句話）",
+    "difficulty": "easy|medium|hard",
+    "suggested_frequency": "daily|weekly",
+    "suggested_times": 3
+  }
+]
+suggested_frequency 為 weekly 時，suggested_times 為每週建議次數（1-7）。`;
+
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 1500, messages: [{ role: 'user', content: prompt }] })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.content) throw new Error(data.error?.message || 'API error');
+      const text = data.content.map(i => i.text || '').join('').replace(/```json|```/g, '').trim();
+      setSuggestions(JSON.parse(text));
+      // init freqMap with suggested defaults
+      const fm = {};
+      JSON.parse(text).forEach((s, i) => {
+        fm[i] = s.suggested_frequency === 'weekly'
+          ? { type: 'weekly', times: s.suggested_times || 3 }
+          : { type: 'daily' };
+      });
+      setFreqMap(fm);
+    } catch (e) {
+      console.error(e);
+      toast('建議生成失敗，請重試');
+      setStep(1);
+    }
+    setLoading(false);
+  };
+
+  const handleGoalChosen = (goal) => {
+    setSelectedGoal(goal);
+    generateSuggestions(goal);
+  };
+
+  const handleNewGoalSubmit = async () => {
+    if (!newGoal.text.trim()) { toast('請填寫目標'); return; }
+    // Append new goal to user's values_answers
+    const va = user.values_answers || {};
+    const updatedGoals = [...(va.goals || []), newGoal];
+    try {
+      await supa.patch('users', `id=eq.${user.id}`, {
+        values_answers: { ...va, goals: updatedGoals }
+      });
+      user.values_answers = { ...va, goals: updatedGoals };
+    } catch { toast('儲存目標失敗'); return; }
+    handleGoalChosen(newGoal);
+  };
+
+  const saveSelected = async () => {
+    if (!selected.size) { toast('請至少選擇一個習慣'); return; }
+    setLoading(true);
+    const goal = selectedGoal || newGoal;
+    try {
+      for (const idx of selected) {
+        const h = suggestions[idx];
+        const freq = freqMap[idx] || { type: 'daily' };
+        await supa.post('habits', {
+          user_id: user.id,
+          title: h.title,
+          description: `${h.description}${h.why ? '｜' + h.why : ''}`,
+          difficulty: h.difficulty,
+          fund_per_day: diffFund(h.difficulty),
+          goal_label: goal.text,
+          frequency: freq,
+        });
+      }
+      toast('習慣新增成功 🌱');
+      onSaved();
+      onClose();
+    } catch { toast('新增失敗'); }
+    setLoading(false);
+  };
+
+  return (
+    <div style={S.modalBg} onClick={e => e.target === e.currentTarget && onClose()}>
+      <div style={{ ...S.modal, maxHeight: '90vh' }}>
+        <div style={{ width: 40, height: 4, background: '#E8E4DF', borderRadius: 2, margin: '0 auto 24px' }} />
+
+        {/* Step 0: Choose mode */}
+        {step === 0 && (
+          <>
+            <div style={{ ...S.h2, marginBottom: 20 }}>新增習慣</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <button
+                style={{ ...S.card, cursor: 'pointer', border: '1.5px solid #2D6A4F', textAlign: 'center', padding: 20 }}
+                onClick={() => { setMode('existing'); setStep(1); }}
+              >
+                <div style={{ fontSize: 24, marginBottom: 8 }}>🎯</div>
+                <div style={{ fontWeight: 500, fontSize: 14 }}>加到現有目標</div>
+                <div style={{ fontSize: 12, color: '#8A857F', marginTop: 4 }}>AI 針對你的目標建議習慣</div>
+              </button>
+              <button
+                style={{ ...S.card, cursor: 'pointer', border: '1.5px solid #E76F51', textAlign: 'center', padding: 20 }}
+                onClick={() => { setMode('new'); setStep(1); }}
+              >
+                <div style={{ fontSize: 24, marginBottom: 8 }}>✨</div>
+                <div style={{ fontWeight: 500, fontSize: 14 }}>建立新目標</div>
+                <div style={{ fontSize: 12, color: '#8A857F', marginTop: 4 }}>設定新目標並生成習慣</div>
+              </button>
+            </div>
+          </>
+        )}
+
+        {/* Step 1a: Pick existing goal */}
+        {step === 1 && mode === 'existing' && (
+          <>
+            <div style={{ ...S.h2, marginBottom: 16 }}>選擇目標</div>
+            {userGoals.length === 0 ? (
+              <p style={S.muted}>還沒有設定目標，請選「建立新目標」</p>
+            ) : userGoals.map(g => (
+              <div key={g.text}
+                style={{ ...S.card, cursor: 'pointer', marginBottom: 10 }}
+                onClick={() => handleGoalChosen(g)}
+              >
+                <div style={{ ...S.row }}>
+                  <span style={{ fontSize: 20 }}>{GOAL_CATEGORIES.find(c => c.label === g.category)?.emoji || '🎯'}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 500 }}>{g.text}</div>
+                    {g.category && <div style={{ fontSize: 12, color: '#8A857F' }}>{g.category}</div>}
+                  </div>
+                  <span style={{ color: '#8A857F' }}>→</span>
+                </div>
+              </div>
+            ))}
+            <button style={{ ...S.btn('secondary'), marginTop: 8 }} onClick={() => setStep(0)}>← 返回</button>
+          </>
+        )}
+
+        {/* Step 1b: Create new goal */}
+        {step === 1 && mode === 'new' && (
+          <>
+            <div style={{ ...S.h2, marginBottom: 16 }}>新目標</div>
+            <div style={{ marginBottom: 14 }}>
+              <label style={S.label}>類別</label>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+                {GOAL_CATEGORIES.map(c => (
+                  <div key={c.label}
+                    style={{ ...S.chip(newGoal.category === c.label), fontSize: 12, padding: '5px 10px' }}
+                    onClick={() => setNewGoal(g => ({ ...g, category: c.label }))}>
+                    {c.emoji} {c.label}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div style={{ marginBottom: 14 }}>
+              <label style={S.label}>具體目標 *</label>
+              <input style={S.input} placeholder="例：考 JLPT N2" value={newGoal.text}
+                onChange={e => setNewGoal(g => ({ ...g, text: e.target.value }))} />
+            </div>
+            <div style={{ marginBottom: 20 }}>
+              <label style={S.label}>每天可投入時間</label>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+                {['15 分鐘以內', '30 分鐘', '1 小時', '1-2 小時', '彈性不固定'].map(o => (
+                  <div key={o} style={{ ...S.chip(newGoal.timePerDay === o), fontSize: 12, padding: '5px 10px' }}
+                    onClick={() => setNewGoal(g => ({ ...g, timePerDay: o }))}>{o}</div>
+                ))}
+              </div>
+            </div>
+            <div style={S.row}>
+              <button style={{ ...S.btn('secondary'), flex: 1 }} onClick={() => setStep(0)}>← 返回</button>
+              <button style={{ ...S.btn('primary'), flex: 1 }} onClick={handleNewGoalSubmit}>生成習慣建議 ✦</button>
+            </div>
+          </>
+        )}
+
+        {/* Step 2: AI suggestions */}
+        {step === 2 && (
+          <>
+            <div style={{ ...S.h2, marginBottom: 8 }}>習慣建議</div>
+            <p style={{ ...S.muted, fontSize: 13, marginBottom: 16 }}>選擇你想開始的習慣，並設定頻率</p>
+            {loading ? (
+              <div style={{ textAlign: 'center', padding: 48, color: '#8A857F' }}>
+                <div style={{ fontSize: 32, marginBottom: 12 }}>✦</div>
+                <p>AI 正在生成建議…</p>
+              </div>
+            ) : (
+              <>
+                {suggestions.map((h, idx) => {
+                  const isSel = selected.has(idx);
+                  const freq = freqMap[idx] || { type: 'daily' };
+                  return (
+                    <div key={idx}
+                      style={{ ...S.card, cursor: 'pointer', border: `1.5px solid ${isSel ? '#2D6A4F' : '#E8E4DF'}`, background: isSel ? '#D8F3DC' : '#fff', marginBottom: 10 }}
+                      onClick={() => setSelected(s => { const n = new Set(s); n.has(idx) ? n.delete(idx) : n.add(idx); return n; })}>
+                      <div style={{ ...S.row, marginBottom: 6 }}>
+                        <span style={{ background: diffBg(h.difficulty), color: diffColor(h.difficulty), padding: '3px 10px', borderRadius: 100, fontSize: 11, fontWeight: 500 }}>{diffLabel(h.difficulty)}</span>
+                        <div style={{ flex: 1 }} />
+                        {isSel && <span style={{ color: '#2D6A4F', fontWeight: 700 }}>✓</span>}
+                      </div>
+                      <div style={{ fontWeight: 600, marginBottom: 4 }}>{h.title}</div>
+                      <div style={{ fontSize: 13, color: '#444', lineHeight: 1.6, marginBottom: 8 }}>{h.description}</div>
+                      {h.why && <div style={{ fontSize: 12, color: '#2D6A4F', background: '#D8F3DC', padding: '4px 10px', borderRadius: 8, display: 'inline-block', marginBottom: 10 }}>💡 {h.why}</div>}
+                      {/* Frequency selector — always visible */}
+                      <div onClick={e => e.stopPropagation()} style={{ marginTop: 8, borderTop: '1px solid #E8E4DF', paddingTop: 10 }}>
+                        <label style={S.label}>頻率</label>
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
+                          <div style={S.chip(freq.type === 'daily')}
+                            onClick={() => setFreqMap(m => ({ ...m, [idx]: { type: 'daily' } }))}>每天</div>
+                          {[2, 3, 4, 5].map(n => (
+                            <div key={n} style={S.chip(freq.type === 'weekly' && freq.times === n)}
+                              onClick={() => setFreqMap(m => ({ ...m, [idx]: { type: 'weekly', times: n } }))}>
+                              每週 {n} 次
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+                <div style={{ ...S.row, marginTop: 8 }}>
+                  <button style={{ ...S.btn('secondary'), flex: 1 }} onClick={() => setStep(1)}>← 返回</button>
+                  <button style={{ ...S.btn('primary'), flex: 1 }} onClick={saveSelected} disabled={loading}>
+                    新增選取的習慣
+                  </button>
+                </div>
+              </>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Main App ─────────────────────────────────────────────
 function MainApp({ user, toast, onSignOut }) {
   const [tab, setTab] = useState('today');
@@ -978,7 +1232,7 @@ function MainApp({ user, toast, onSignOut }) {
       <div style={{ ...S.row, padding: '12px 0 24px' }}>
         <div><div style={S.h2}>習慣管理</div><p style={S.muted}>管理你的所有習慣</p></div>
         <div style={{ flex: 1 }} />
-        <button style={{ ...S.btn('primary'), padding: '9px 18px', fontSize: 13 }} onClick={() => { setForm({ diff: 'medium' }); setModal('add'); }}>+ 新增</button>
+        <button style={{ ...S.btn('primary'), padding: '9px 18px', fontSize: 13 }} onClick={() => setModal('add')}>+ 新增</button>
       </div>
       {habits.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '48px 24px', color: '#8A857F' }}>
@@ -1152,27 +1406,14 @@ function MainApp({ user, toast, onSignOut }) {
       </nav>
 
       {/* Add Habit Modal */}
-      <Modal open={modal === 'add'} onClose={() => setModal(null)} title="新增習慣">
-        {['title:習慣名稱:例：每天靜坐 10 分鐘', 'desc:說明（選填）:為什麼這個習慣對你重要？'].map(f => {
-          const [key, label, ph] = f.split(':');
-          return <div key={key} style={{ marginBottom: 18 }}>
-            <label style={S.label}>{label}</label>
-            <input style={S.input} placeholder={ph} value={form[key] || ''} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))} />
-          </div>;
-        })}
-        <div style={{ marginBottom: 18 }}>
-          <label style={S.label}>難度</label>
-          <select style={S.input} value={form.diff || 'medium'} onChange={e => setForm(f => ({ ...f, diff: e.target.value }))}>
-            <option value="easy">輕鬆 — NT$5/天</option>
-            <option value="medium">適中 — NT$10/天</option>
-            <option value="hard">挑戰 — NT$20/天</option>
-          </select>
-        </div>
-        <div style={{ ...S.row, marginTop: 8 }}>
-          <button style={{ ...S.btn('secondary'), flex: 1 }} onClick={() => setModal(null)}>取消</button>
-          <button style={{ ...S.btn('primary'), flex: 1 }} onClick={saveHabit}>儲存習慣</button>
-        </div>
-      </Modal>
+      {modal === 'add' && (
+        <AddHabitModal
+          user={user}
+          onClose={() => setModal(null)}
+          onSaved={load}
+          toast={toast}
+        />
+      )}
 
       {/* Donate Modal */}
       <Modal open={modal === 'donate'} onClose={() => setModal(null)} title="捐給慈善機構">
