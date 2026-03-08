@@ -772,6 +772,43 @@ function Modal({ open, onClose, title, children }) {
   );
 }
 
+// ── SMART Review helper ───────────────────────────────────
+async function callSmartReview(goals) {
+  const goalLines = goals.map((g, i) =>
+    `目標${i + 1}：${g.category ? `【${g.category}】` : ''}${g.text}` +
+    (g.deadline ? `，期限：${g.deadline}` : '') +
+    (g.timePerDay ? `，每天可投入：${g.timePerDay}` : '')
+  ).join('\n');
+
+  const prompt = `分析以下目標清單，為每個目標進行 SMART 分析。回傳純 JSON 陣列（不含 markdown），陣列長度必須等於目標數量：
+[
+  {
+    "specific": "從目標中提取的具體描述，或 null 若不夠具體",
+    "measurable": "可衡量的具體指標（數字/標準），或 null 若缺少",
+    "timeBound": "從目標中提取的時限，或 null 若未提及",
+    "identity": "建議身份認同句，以「我是一個」開頭，20字以內",
+    "rewrite": "若目標太模糊，提供更具體的改寫建議；否則為 null"
+  }
+]
+
+目標清單：
+${goalLines}`;
+
+  const res = await fetch('/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 1000,
+      messages: [{ role: 'user', content: prompt }]
+    })
+  });
+  const data = await res.json();
+  if (!res.ok || !data.content) throw new Error(data.error?.message || 'API error');
+  const text = data.content.map(i => i.text || '').join('').replace(/```json|```/g, '').trim();
+  return JSON.parse(text);
+}
+
 // ── Add Habit Modal (AI-assisted) ────────────────────────
 function AddHabitModal({ user, onClose, onSaved, toast }) {
   const [step, setStep] = useState(0); // 0=choose, 1=pick/create goal, 2=suggestions
