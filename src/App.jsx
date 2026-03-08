@@ -934,6 +934,9 @@ function AddHabitModal({ user, onClose, onSaved, toast }) {
   const [selected, setSelected] = useState(new Set());
   const [loading, setLoading] = useState(false);
   const [freqMap, setFreqMap] = useState({}); // idx -> {type, times}
+  const [newGoalReview, setNewGoalReview] = useState(null); // SMART review for new goal
+  const [newGoalIdentity, setNewGoalIdentity] = useState('');
+  const [newGoalMeasurable, setNewGoalMeasurable] = useState('');
 
   const userGoals = (user.values_answers?.goals || []).filter(g => g.text?.trim());
 
@@ -990,16 +993,42 @@ suggested_frequency 為 weekly 時，suggested_times 為每週建議次數（1-7
 
   const handleNewGoalSubmit = async () => {
     if (!newGoal.text.trim()) { toast('請填寫目標'); return; }
-    // Append new goal to user's values_answers
+    setLoading(true);
+    try {
+      const [review] = await callSmartReview([newGoal]);
+      setNewGoalReview(review);
+      setNewGoalIdentity(review.identity || '');
+      setNewGoalMeasurable(review.measurable || '');
+      setStep('1b-smart');
+    } catch (e) {
+      console.error(e);
+      toast('目標分析失敗，請重試');
+    }
+    setLoading(false);
+  };
+
+  const confirmNewGoalSmart = async () => {
+    if (!newGoalMeasurable.trim()) { toast('請填寫可衡量指標'); return; }
+    const enrichedGoal = {
+      ...newGoal,
+      identity: newGoalIdentity,
+      smart: {
+        specific: newGoalReview.specific,
+        measurable: newGoalMeasurable,
+        timeBound: newGoalReview.timeBound,
+      }
+    };
+    // Save enriched goal to user's values_answers
     const va = user.values_answers || {};
-    const updatedGoals = [...(va.goals || []), newGoal];
+    const updatedGoals = [...(va.goals || []), enrichedGoal];
     try {
       await supa.patch('users', `id=eq.${user.id}`, {
         values_answers: { ...va, goals: updatedGoals }
       });
       user.values_answers = { ...va, goals: updatedGoals };
     } catch { toast('儲存目標失敗'); return; }
-    handleGoalChosen(newGoal);
+    setSelectedGoal(enrichedGoal);
+    generateSuggestions(enrichedGoal);
   };
 
   const saveSelected = async () => {
@@ -1114,7 +1143,67 @@ suggested_frequency 為 weekly 時，suggested_times 為每週建議次數（1-7
             </div>
             <div style={S.row}>
               <button style={{ ...S.btn('secondary'), flex: 1 }} onClick={() => setStep(0)}>← 返回</button>
-              <button style={{ ...S.btn('primary'), flex: 1 }} onClick={handleNewGoalSubmit}>生成習慣建議 ✦</button>
+              <button style={{ ...S.btn('primary'), flex: 1 }} onClick={handleNewGoalSubmit} disabled={loading}>{loading ? '分析中…' : '生成習慣建議 ✦'}</button>
+            </div>
+          </>
+        )}
+
+        {/* Step 1b-smart: SMART review for new goal */}
+        {step === '1b-smart' && newGoalReview && (
+          <>
+            <div style={{ ...S.h2, marginBottom: 8 }}>目標審視</div>
+            <p style={{ ...S.muted, fontSize: 13, marginBottom: 16 }}>確認你的目標具體可執行</p>
+            <div style={S.card}>
+              <div style={{ fontWeight: 500, fontSize: 15, marginBottom: 12 }}>
+                {GOAL_CATEGORIES.find(c => c.label === newGoal.category)?.emoji || '🎯'} {newGoal.text}
+              </div>
+              {newGoalReview.rewrite && (
+                <div style={{ background: '#FDF3E3', border: '1px solid #F0D9B5', borderRadius: 10, padding: '10px 14px', marginBottom: 12, fontSize: 13, color: '#B5935A' }}>
+                  💡 建議改寫：「{newGoalReview.rewrite}」
+                </div>
+              )}
+              {[
+                { label: 'S 具體', value: newGoalReview.specific },
+                { label: 'T 有時限', value: newGoalReview.timeBound },
+              ].map(({ label, value }) => (
+                <div key={label} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 10 }}>
+                  <span style={{ fontSize: 16, flexShrink: 0 }}>{value ? '✅' : '❌'}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12, fontWeight: 500, color: '#8A857F', marginBottom: 3 }}>{label}</div>
+                    <div style={{ fontSize: 13, color: value ? '#1A1714' : '#8A857F' }}>
+                      {value || '未偵測到，可在確認後補充'}
+                    </div>
+                  </div>
+                </div>
+              ))}
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 14 }}>
+                <span style={{ fontSize: 16, flexShrink: 0 }}>{newGoalReview.measurable ? '✅' : '❌'}</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 12, fontWeight: 500, color: '#8A857F', marginBottom: 3 }}>M 可衡量 *</div>
+                  {newGoalReview.measurable ? (
+                    <input style={{ ...S.input, fontSize: 13 }} value={newGoalMeasurable}
+                      onChange={e => setNewGoalMeasurable(e.target.value)} />
+                  ) : (
+                    <input style={{ ...S.input, fontSize: 13 }}
+                      placeholder="請填入具體數字或標準，例：每週跑 3 次"
+                      value={newGoalMeasurable}
+                      onChange={e => setNewGoalMeasurable(e.target.value)} />
+                  )}
+                </div>
+              </div>
+              <div>
+                <label style={S.label}>身份認同句</label>
+                <input style={{ ...S.input, marginTop: 6 }}
+                  value={newGoalIdentity}
+                  onChange={e => setNewGoalIdentity(e.target.value)}
+                  placeholder="我是一個..." />
+              </div>
+            </div>
+            <div style={{ ...S.row, marginTop: 16 }}>
+              <button style={{ ...S.btn('secondary'), flex: 1 }} onClick={() => { setStep(1); setNewGoalReview(null); }}>← 返回</button>
+              <button style={{ ...S.btn('primary'), flex: 1 }} onClick={confirmNewGoalSmart} disabled={loading}>
+                生成習慣建議 ✦
+              </button>
             </div>
           </>
         )}
