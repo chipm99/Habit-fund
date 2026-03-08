@@ -35,6 +35,46 @@ const diffFund = d => ({ easy: 5, medium: 10, hard: 20 }[d] || 10);
 const diffColor = d => ({ easy: '#2D6A4F', medium: '#B5935A', hard: '#E76F51' }[d]);
 const diffBg = d => ({ easy: '#D8F3DC', medium: '#FDF3E3', hard: '#FDEBD0' }[d]);
 
+const weekStart = () => {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); // Monday
+  return d.toISOString().split('T')[0];
+};
+
+const getWeeklyCount = (habitId, checkins) => {
+  const ws = weekStart();
+  const we = todayStr();
+  return checkins.filter(c =>
+    c.habit_id === habitId &&
+    c.checked_date >= ws &&
+    c.checked_date <= we
+  ).length;
+};
+
+const getWeeklyStreak = (habitId, checkins, times) => {
+  // Count consecutive past weeks (not including current) where target was met
+  let streak = 0;
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  for (let w = 1; w <= 52; w++) {
+    const end = new Date(d);
+    end.setDate(d.getDate() - ((d.getDay() + 6) % 7) - (w - 1) * 7);
+    const start = new Date(end);
+    start.setDate(end.getDate() - 6);
+    const ws = start.toISOString().split('T')[0];
+    const we = end.toISOString().split('T')[0];
+    const count = checkins.filter(c =>
+      c.habit_id === habitId &&
+      c.checked_date >= ws &&
+      c.checked_date <= we
+    ).length;
+    if (count >= times) streak++;
+    else break;
+  }
+  return streak;
+};
+
 function getStreak(habitId, checkins) {
   const dates = checkins
     .filter(c => c.habit_id === habitId)
