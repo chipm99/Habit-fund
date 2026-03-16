@@ -1322,6 +1322,54 @@ suggested_frequency 為 weekly 時，suggested_times 為每週建議次數（1-7
   );
 }
 
+// ── Chain Broken Modal ────────────────────────────────────
+function ChainBrokenModal({ broken, onDismiss }) {
+  const [idx, setIdx] = useState(0);
+  if (!broken.length) return null;
+  const item = broken[idx];
+
+  const next = () => {
+    if (idx + 1 < broken.length) setIdx(i => i + 1);
+    else onDismiss();
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: '#1A1714', zIndex: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+      <div style={{ maxWidth: 400, width: '100%', textAlign: 'center' }}>
+        <div style={{ fontSize: 64, marginBottom: 24 }}>😢</div>
+        <div style={{ fontFamily: "'Georgia', serif", fontSize: '2rem', color: '#fff', marginBottom: 20 }}>哭哭</div>
+        <div style={{ color: '#8A857F', fontSize: 14, marginBottom: 6 }}>「{item.habitTitle}」</div>
+        <div style={{ color: '#fff', fontSize: 16, marginBottom: 28 }}>習慣中斷啦</div>
+        <div style={{ background: 'rgba(255,255,255,0.07)', borderRadius: 16, padding: '20px 24px', marginBottom: 24 }}>
+          <div style={{ color: '#8A857F', fontSize: 13, marginBottom: 6 }}>你曾連續堅持了</div>
+          <div style={{ fontFamily: "'Georgia', serif", fontSize: '3rem', color: '#fff' }}>
+            {item.peakStreak} 天
+          </div>
+          {item.lostAmount > 0 && (
+            <div style={{ color: '#E76F51', fontSize: 14, marginTop: 12 }}>
+              NT${item.lostAmount} 的累積已歸零
+            </div>
+          )}
+        </div>
+        <div style={{ color: '#8A857F', fontSize: 13, lineHeight: 1.9, marginBottom: 28 }}>
+          損失不可挽回。<br />但今天可以重新開始。
+        </div>
+        <button
+          style={{ display: 'block', width: '100%', padding: '14px 24px', borderRadius: 100, border: 'none', background: '#E76F51', color: '#fff', fontSize: 15, fontWeight: 500, cursor: 'pointer', fontFamily: 'inherit' }}
+          onClick={next}
+        >
+          我知道了，重新開始
+        </button>
+        {broken.length > 1 && (
+          <div style={{ color: '#8A857F', fontSize: 12, marginTop: 14 }}>
+            {idx + 1} / {broken.length}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Main App ─────────────────────────────────────────────
 function MainApp({ user, toast, onSignOut }) {
   const [tab, setTab] = useState('today');
@@ -1774,6 +1822,8 @@ function MainApp({ user, toast, onSignOut }) {
   return (
     <div style={S.bg}>
       <div style={S.app}>{tabs[tab]}</div>
+
+      <ChainBrokenModal broken={chainBroken} onDismiss={() => setChainBroken([])} />
 
       {/* Nav */}
       <nav style={S.nav}>
