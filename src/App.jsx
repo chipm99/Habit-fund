@@ -1568,7 +1568,13 @@ function MainApp({ user, toast, onSignOut }) {
             const streak = isWeekly
               ? getWeeklyStreak(h.id, checkins, freq.times)
               : getStreak(h.id, checkins);
-            const total = checkins.filter(c => c.habit_id === h.id).length;
+            // lifetimeTotal: all checkins ever (for 📅 display)
+            // chainFundCheckins: post-break only for chain-mode habits (for 💰 display)
+            const lifetimeTotal = checkins.filter(c => c.habit_id === h.id).length;
+            const chainFundCheckins = h.chain_mode && h.chain_broken_at
+              ? checkins.filter(c => c.habit_id === h.id && c.checked_date > h.chain_broken_at)
+              : checkins.filter(c => c.habit_id === h.id);
+            const total = lifetimeTotal; // keep for 📅 累計 display (lifetime)
             const userGoals = (user.values_answers?.goals || []).filter(g => g.text?.trim());
             return (
               <div key={h.id} style={S.card}>
@@ -1593,7 +1599,7 @@ function MainApp({ user, toast, onSignOut }) {
                 <div style={{ ...S.row, marginTop: 12 }}>
                   <span style={{ ...S.muted, fontSize: 12 }}>🔥 連續 {streak}{isWeekly ? '週' : '天'}</span>
                   <span style={{ ...S.muted, fontSize: 12 }}>📅 累計 {total} 次</span>
-                  <span style={{ ...S.muted, fontSize: 12 }}>💰 NT${total * h.fund_per_day}</span>
+                  <span style={{ ...S.muted, fontSize: 12 }}>💰 NT${chainFundCheckins.length * h.fund_per_day}</span>
                 </div>
                 {userGoals.length > 0 && (
                   <div style={{ marginTop: 12 }}>
