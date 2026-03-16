@@ -94,6 +94,20 @@ function getStreak(habitId, checkins) {
   return streak;
 }
 
+// Count consecutive daily checkins for a habit ending on `asOf` (YYYY-MM-DD)
+function getStreakAsOf(habitId, checkins, asOf) {
+  const checkedSet = new Set(
+    checkins.filter(c => c.habit_id === habitId && c.checked_date <= asOf).map(c => c.checked_date)
+  );
+  let streak = 0;
+  const d = new Date(asOf + 'T00:00:00');
+  while (checkedSet.has(d.toISOString().split('T')[0])) {
+    streak++;
+    d.setDate(d.getDate() - 1);
+  }
+  return streak;
+}
+
 // ── Toast ────────────────────────────────────────────────
 function useToast() {
   const [msg, setMsg] = useState('');
@@ -1364,7 +1378,12 @@ function MainApp({ user, toast, onSignOut }) {
   const todayCheckins = new Set(checkins.filter(c => c.checked_date === todayStr()).map(c => c.habit_id));
 
   const calcFund = () => {
-    const earned = habits.reduce((s, h) => s + checkins.filter(c => c.habit_id === h.id).length * h.fund_per_day, 0);
+    const earned = habits.reduce((s, h) => {
+      const relevant = h.chain_mode && h.chain_broken_at
+        ? checkins.filter(c => c.habit_id === h.id && c.checked_date > h.chain_broken_at)
+        : checkins.filter(c => c.habit_id === h.id);
+      return s + relevant.length * h.fund_per_day;
+    }, 0);
     const used = fundUses.reduce((s, u) => s + Number(u.amount), 0);
     return { earned, used, balance: earned - used };
   };
