@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { createClient } from '@supabase/supabase-js';
 
 const SUPABASE_URL = 'https://keenwhiygrrnxhllibxa.supabase.co';
@@ -1333,6 +1333,8 @@ function MainApp({ user, toast, onSignOut }) {
   const [collapsed, setCollapsed] = useState({});
   const toggleCollapse = (key) => setCollapsed(s => ({ ...s, [key]: !s[key] }));
   const [showCapWarning, setShowCapWarning] = useState(false);
+  const [chainBroken, setChainBroken] = useState([]); // [{habitTitle, peakStreak, lostAmount}]
+  const chainChecked = useRef(false);
 
   const parseDesc = (raw) => {
     if (!raw) return { desc: '', cue: '', reward: '' };
@@ -1373,7 +1375,60 @@ function MainApp({ user, toast, onSignOut }) {
     setHabits(h || []); setCheckins(c || []); setFundUses(f || []);
   }, [user.id]);
 
+  const detectChainBreaks = useCallback(async () => {
+    const yesterday = (() => {
+      const d = new Date();
+      d.setDate(d.getDate() - 1);
+      return d.toISOString().split('T')[0];
+    })();
+    const dayBeforeYesterday = (() => {
+      const d = new Date();
+      d.setDate(d.getDate() - 2);
+      return d.toISOString().split('T')[0];
+    })();
+
+    const chainHabits = habits.filter(h =>
+      h.chain_mode &&
+      (h.frequency?.type === 'daily' || !h.frequency) &&
+      h.created_at.split('T')[0] < yesterday &&
+      !(h.chain_broken_at && h.chain_broken_at >= yesterday)
+    );
+
+    const broken = [];
+    for (const h of chainHabits) {
+      const hadCheckin = checkins.some(c => c.habit_id === h.id && c.checked_date === yesterday);
+      if (!hadCheckin) {
+        const peakStreak = getStreakAsOf(h.id, checkins, dayBeforeYesterday);
+        const relevant = h.chain_broken_at
+          ? checkins.filter(c => c.habit_id === h.id && c.checked_date > h.chain_broken_at)
+          : checkins.filter(c => c.habit_id === h.id);
+        const lostAmount = relevant.length * h.fund_per_day;
+        try {
+          await supa.patch('habits', `id=eq.${h.id}`, {
+            chain_broken_at: yesterday,
+            chain_peak_streak: peakStreak,
+          });
+          broken.push({ habitTitle: h.title, peakStreak, lostAmount });
+        } catch (e) {
+          console.error('chain break update failed:', e);
+        }
+      }
+    }
+
+    if (broken.length > 0) {
+      setChainBroken(broken);
+      await load();
+    }
+  }, [habits, checkins, load]);
+
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (!chainChecked.current && habits.length >= 0 && checkins !== undefined) {
+      chainChecked.current = true;
+      detectChainBreaks();
+    }
+  }, [habits, checkins, detectChainBreaks]);
 
   const todayCheckins = new Set(checkins.filter(c => c.checked_date === todayStr()).map(c => c.habit_id));
 
