@@ -1383,6 +1383,7 @@ function MainApp({ user, toast, onSignOut }) {
   const [showCapWarning, setShowCapWarning] = useState(false);
   const [chainBroken, setChainBroken] = useState([]); // [{habitTitle, peakStreak, lostAmount}]
   const chainChecked = useRef(false);
+  const [confirmChainHabit, setConfirmChainHabit] = useState(null); // habitId | null
 
   const parseDesc = (raw) => {
     if (!raw) return { desc: '', cue: '', reward: '' };
@@ -1517,6 +1518,23 @@ function MainApp({ user, toast, onSignOut }) {
   const deleteHabit = async (id) => {
     if (!confirm('確定要刪除這個習慣嗎？')) return;
     try { await supa.patch('habits', `id=eq.${id}`, { is_active: false }); await load(); toast('習慣已刪除'); } catch { toast('刪除失敗'); }
+  };
+
+  const enableChainMode = async (habitId) => {
+    try {
+      await supa.patch('habits', `id=eq.${habitId}`, { chain_mode: true });
+      await load();
+      setConfirmChainHabit(null);
+      toast('不斷鏈模式已啟用 ⛓️');
+    } catch { toast('操作失敗'); }
+  };
+
+  const disableChainMode = async (habitId) => {
+    try {
+      await supa.patch('habits', `id=eq.${habitId}`, { chain_mode: false });
+      await load();
+      toast('不斷鏈模式已停用');
+    } catch { toast('操作失敗'); }
   };
 
   const useFund = async (type) => {
@@ -1704,6 +1722,25 @@ function MainApp({ user, toast, onSignOut }) {
                   <span style={{ ...S.muted, fontSize: 12 }}>📅 累計 {total} 次</span>
                   <span style={{ ...S.muted, fontSize: 12 }}>💰 NT${chainFundCheckins.length * h.fund_per_day}</span>
                 </div>
+                {(!h.frequency || h.frequency?.type === 'daily') && (
+                  <div style={{ marginTop: 10, borderTop: '1px solid #E8E4DF', paddingTop: 10 }}>
+                    {h.chain_mode ? (
+                      <button
+                        style={{ background: 'none', border: '1px solid #E8E4DF', borderRadius: 100, padding: '5px 14px', fontSize: 12, color: '#8A857F', cursor: 'pointer', fontFamily: 'inherit' }}
+                        onClick={() => disableChainMode(h.id)}
+                      >
+                        ⛓️ 不斷鏈中（點擊停用）
+                      </button>
+                    ) : (
+                      <button
+                        style={{ background: 'none', border: '1px solid #E8E4DF', borderRadius: 100, padding: '5px 14px', fontSize: 12, color: '#8A857F', cursor: 'pointer', fontFamily: 'inherit' }}
+                        onClick={() => setConfirmChainHabit(h.id)}
+                      >
+                        🔗 開啟不斷鏈
+                      </button>
+                    )}
+                  </div>
+                )}
                 {userGoals.length > 0 && (
                   <div style={{ marginTop: 12 }}>
                     <label style={S.label}>歸屬目標</label>
@@ -1824,6 +1861,18 @@ function MainApp({ user, toast, onSignOut }) {
       <div style={S.app}>{tabs[tab]}</div>
 
       <ChainBrokenModal broken={chainBroken} onDismiss={() => setChainBroken([])} />
+
+      {confirmChainHabit && (
+        <Modal open title="啟用不斷鏈模式？" onClose={() => setConfirmChainHabit(null)}>
+          <p style={{ ...S.muted, lineHeight: 1.8, marginBottom: 20 }}>
+            一旦啟用，只要有一天沒完成，<br />這個習慣的所有累積基金將歸零。
+          </p>
+          <div style={S.row}>
+            <button style={{ ...S.btn('secondary'), flex: 1 }} onClick={() => setConfirmChainHabit(null)}>取消</button>
+            <button style={{ ...S.btn('warm'), flex: 1 }} onClick={() => enableChainMode(confirmChainHabit)}>啟用，我做得到</button>
+          </div>
+        </Modal>
+      )}
 
       {/* Nav */}
       <nav style={S.nav}>
