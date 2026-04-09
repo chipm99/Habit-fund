@@ -112,6 +112,19 @@ function getStreakAsOf(habitId, checkins, asOf) {
   return streak;
 }
 
+// Returns last N days [{date, checked, isToday}] for a habit
+const getRecentDays = (habitId, checkins, n = 7) => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const checked = new Set(checkins.filter(c => c.habit_id === habitId).map(c => c.checked_date));
+  return Array.from({ length: n }, (_, i) => {
+    const d = new Date(today);
+    d.setDate(today.getDate() - (n - 1 - i));
+    const ds = d.toISOString().split('T')[0];
+    return { date: ds, checked: checked.has(ds), isToday: i === n - 1 };
+  });
+};
+
 // ── Toast ────────────────────────────────────────────────
 function useToast() {
   const [msg, setMsg] = useState('');
@@ -1388,6 +1401,36 @@ function MainApp({ user, toast, onSignOut }) {
   const [chainBroken, setChainBroken] = useState([]); // [{habitTitle, peakStreak, lostAmount}]
   const chainChecked = useRef(false);
   const [confirmChainHabit, setConfirmChainHabit] = useState(null); // habitId | null
+  const [notifTime, setNotifTime] = useState(() => localStorage.getItem('notif_time') || '21:00');
+  const [notifEnabled, setNotifEnabled] = useState(() => localStorage.getItem('notif_enabled') === 'true');
+  const notifSentRef = useRef(localStorage.getItem('notif_sent_date') === todayStr());
+
+  // Schedule a daily reminder notification when app is open
+  useEffect(() => {
+    if (!notifEnabled || Notification.permission !== 'granted') return;
+    const schedule = () => {
+      const [h, m] = notifTime.split(':').map(Number);
+      const now = new Date();
+      const target = new Date();
+      target.setHours(h, m, 0, 0);
+      if (target <= now) return; // already past today
+      const ms = target - now;
+      const tid = setTimeout(() => {
+        if (notifSentRef.current) return;
+        const undone = habits.filter(hb => !new Set(checkins.filter(c => c.checked_date === todayStr()).map(c => c.habit_id)).has(hb.id));
+        if (undone.length > 0) {
+          new Notification('Habit Fund 提醒', {
+            body: `今天還有 ${undone.length} 個習慣未完成：${undone.map(x => x.title).join('、')}`,
+            icon: '/favicon.ico',
+          });
+          notifSentRef.current = true;
+          localStorage.setItem('notif_sent_date', todayStr());
+        }
+      }, ms);
+      return () => clearTimeout(tid);
+    };
+    return schedule();
+  }, [notifEnabled, notifTime, habits, checkins]);
 
   const parseDesc = (raw) => {
     if (!raw) return { desc: '', cue: '', reward: '' };
@@ -1663,7 +1706,19 @@ function MainApp({ user, toast, onSignOut }) {
                             </div>
                           </div>
                         ) : (
-                          <div style={{ fontSize: 12, color: '#8A857F', marginTop: 2 }}>NT${h.fund_per_day}/天 · {diffLabel(h.difficulty)}</div>
+                          <>
+                            <div style={{ fontSize: 12, color: '#8A857F', marginTop: 2 }}>NT${h.fund_per_day}/天 · {diffLabel(h.difficulty)}</div>
+                            <div style={{ display: 'flex', gap: 3, marginTop: 6 }}>
+                              {getRecentDays(h.id, checkins).map(({ date, checked, isToday }) => (
+                                <div key={date} title={date} style={{
+                                  width: 10, height: 10, borderRadius: 3,
+                                  background: checked ? '#2D6A4F' : '#E8E4DF',
+                                  outline: isToday ? '2px solid #B5935A' : 'none',
+                                  outlineOffset: 1,
+                                }} />
+                              ))}
+                            </div>
+                          </>
                         )}
                       </div>
                       {streak > 0 && (
@@ -1755,6 +1810,19 @@ function MainApp({ user, toast, onSignOut }) {
                   <span style={{ ...S.muted, fontSize: 12 }}>📅 累計 {total} 次</span>
                   <span style={{ ...S.muted, fontSize: 12 }}>💰 NT${chainFundCheckins.length * h.fund_per_day}</span>
                 </div>
+                {!isWeekly && (
+                  <div style={{ display: 'flex', gap: 3, marginTop: 10 }}>
+                    {getRecentDays(h.id, checkins).map(({ date, checked, isToday }) => (
+                      <div key={date} title={date} style={{
+                        width: 12, height: 12, borderRadius: 3,
+                        background: checked ? '#2D6A4F' : '#E8E4DF',
+                        outline: isToday ? '2px solid #B5935A' : 'none',
+                        outlineOffset: 1,
+                      }} />
+                    ))}
+                    <span style={{ fontSize: 11, color: '#B5935A', marginLeft: 6, alignSelf: 'center' }}>近 7 天</span>
+                  </div>
+                )}
                 {(!h.frequency || h.frequency?.type === 'daily') && (
                   <div style={{ marginTop: 10, borderTop: '1px solid #E8E4DF', paddingTop: 10 }}>
                     {h.chain_mode ? (
@@ -1869,6 +1937,53 @@ function MainApp({ user, toast, onSignOut }) {
             </div>
           );
         })}
+        <div style={{ ...S.card, marginTop: 14 }}>
+          <div style={{ fontWeight: 500, marginBottom: 14 }}>🔔 每日提醒</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+            <span style={{ fontSize: 14, flex: 1 }}>開啟每日提醒通知</span>
+            <button
+              onClick={async () => {
+                if (!notifEnabled) {
+                  const perm = Notification.permission === 'granted'
+                    ? 'granted'
+                    : await Notification.requestPermission();
+                  if (perm !== 'granted') { toast('請在瀏覽器設定中允許通知'); return; }
+                  setNotifEnabled(true);
+                  localStorage.setItem('notif_enabled', 'true');
+                  toast('每日提醒已開啟 🔔');
+                } else {
+                  setNotifEnabled(false);
+                  localStorage.setItem('notif_enabled', 'false');
+                  toast('每日提醒已關閉');
+                }
+              }}
+              style={{
+                width: 44, height: 24, borderRadius: 100, border: 'none', cursor: 'pointer',
+                background: notifEnabled ? '#2D6A4F' : '#E8E4DF',
+                position: 'relative', transition: 'background .2s', flexShrink: 0,
+              }}
+            >
+              <div style={{
+                width: 18, height: 18, borderRadius: '50%', background: '#fff',
+                position: 'absolute', top: 3, left: notifEnabled ? 23 : 3,
+                transition: 'left .2s', boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+              }} />
+            </button>
+          </div>
+          {notifEnabled && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontSize: 13, color: '#8A857F' }}>提醒時間</span>
+              <input
+                type="time"
+                value={notifTime}
+                onChange={e => { setNotifTime(e.target.value); localStorage.setItem('notif_time', e.target.value); }}
+                style={{ ...S.input, width: 'auto', padding: '6px 10px', fontSize: 13 }}
+              />
+              <span style={{ fontSize: 12, color: '#8A857F' }}>（App 須在背景開著）</span>
+            </div>
+          )}
+        </div>
+
         {v.goals?.filter(g => g.text?.trim()).length > 0 && (
           <div style={{ ...S.card, marginTop: 14 }}>
             <div style={{ fontWeight: 500, marginBottom: 14 }}>你的目標</div>
