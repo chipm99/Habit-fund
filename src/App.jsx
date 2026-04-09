@@ -83,13 +83,17 @@ function getStreak(habitId, checkins) {
   if (!dates.length) return 0;
   let streak = 0;
   let cur = new Date();
+  cur.setHours(0, 0, 0, 0);
   for (const ds of dates) {
     const d = new Date(ds + 'T00:00:00');
-    cur.setHours(0, 0, 0, 0);
     d.setHours(0, 0, 0, 0);
     const diff = Math.round((cur - d) / 86400000);
-    if (diff === 0 || diff === streak) { streak++; cur = new Date(d); cur.setDate(cur.getDate() - 1); }
-    else break;
+    // Allow streak to start from today (diff=0) or yesterday (diff=1) if not yet checked in today
+    if (diff === 0 || (streak === 0 && diff === 1)) {
+      streak++;
+      cur = new Date(d);
+      cur.setDate(cur.getDate() - 1);
+    } else break;
   }
   return streak;
 }
@@ -1494,8 +1498,18 @@ function MainApp({ user, toast, onSignOut }) {
 
   const toggleCheckin = async (hId, done) => {
     try {
-      if (done) await supa.del('checkins', `habit_id=eq.${hId}&checked_date=eq.${todayStr()}`);
-      else { await supa.post('checkins', { habit_id: hId, user_id: user.id, checked_date: todayStr() }); toast('打卡成功！繼續保持 🌟'); }
+      if (done) {
+        const streak = getStreak(hId, checkins);
+        if (streak > 1 && !window.confirm(`取消打卡會中斷你的 ${streak} 天連續紀錄，確定嗎？`)) return;
+        await supa.del('checkins', `habit_id=eq.${hId}&checked_date=eq.${todayStr()}`);
+      } else {
+        await supa.post('checkins', { habit_id: hId, user_id: user.id, checked_date: todayStr() });
+        const newCheckins = [...checkins, { habit_id: hId, checked_date: todayStr() }];
+        const newStreak = getStreak(hId, newCheckins);
+        const milestone = [7, 14, 30, 100].find(m => newStreak === m);
+        if (milestone) toast(`🎉 哇！連續 ${milestone} 天！太厲害了！`);
+        else toast('打卡成功！繼續保持 🌟');
+      }
       await load();
     } catch { toast('操作失敗'); }
   };
@@ -1570,6 +1584,25 @@ function MainApp({ user, toast, onSignOut }) {
           <p>去「習慣」頁面新增你的第一個習慣吧！</p>
         </div>
       ) : (<>
+        {(() => {
+          const atRisk = habits.filter(h => {
+            if (h.frequency?.type === 'weekly') return false;
+            if (todayCheckins.has(h.id)) return false;
+            return getStreak(h.id, checkins) > 0;
+          });
+          if (!atRisk.length) return null;
+          return (
+            <div style={{ background: '#FFF8EC', border: '1px solid #F5C97A', borderRadius: 14, padding: '14px 18px', marginBottom: 14, display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+              <div style={{ fontSize: 22, flexShrink: 0 }}>🔥</div>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 14, color: '#92610A', marginBottom: 4 }}>連續天數待確認</div>
+                <div style={{ fontSize: 13, color: '#B5935A', lineHeight: 1.5 }}>
+                  {atRisk.map(h => `「${h.title}」${getStreak(h.id, checkins)} 天`).join('、')} 今天還沒打卡，記得完成哦！
+                </div>
+              </div>
+            </div>
+          );
+        })()}
         <div style={S.card}>
           <div style={{ ...S.row, marginBottom: 14 }}>
             <div>
