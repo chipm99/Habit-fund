@@ -351,88 +351,291 @@ function GoalCard({ index, goal, onChange }) {
   );
 }
 
+// Quick-start templates — data-driven wall (no hand-coded cards)
+const QUICK_TEMPLATES = [
+  { emoji: '🧘', title: '冥想',     desc: '每天靜心 10 分鐘', difficulty: 'easy',   frequency: { type: 'daily' },            goal_label: '身心平衡' },
+  { emoji: '🏃', title: '運動',     desc: '每週運動 3 次',   difficulty: 'medium', frequency: { type: 'weekly', times: 3 }, goal_label: '健康體態' },
+  { emoji: '🇯🇵', title: '日文',     desc: '每天日文 30 分鐘', difficulty: 'medium', frequency: { type: 'daily' },            goal_label: '語言學習' },
+  { emoji: '📖', title: '閱讀',     desc: '每天閱讀 20 分鐘', difficulty: 'easy',   frequency: { type: 'daily' },            goal_label: '技能進修' },
+  { emoji: '💧', title: '喝水',     desc: '每天喝水 8 杯',   difficulty: 'easy',   frequency: { type: 'daily' },            goal_label: '健康體態' },
+  { emoji: '🌙', title: '早睡',     desc: '每天 11 點前入睡', difficulty: 'medium', frequency: { type: 'daily' },            goal_label: '身心平衡' },
+  { emoji: '✍️', title: '寫日記',   desc: '每天寫日記',     difficulty: 'easy',   frequency: { type: 'daily' },            goal_label: '創意表達' },
+  { emoji: '🎯', title: '求職行動', desc: '每週求職行動 1 次', difficulty: 'medium', frequency: { type: 'weekly', times: 1 }, goal_label: '技能進修' },
+];
+
+// Quick questionnaire: domains → concrete habit chips (same shape as templates)
+const SURVEY_DOMAINS = [
+  { key: '健康', emoji: '💪', habits: [
+    { emoji: '🏃', title: '運動', desc: '每週運動 3 次', difficulty: 'medium', frequency: { type: 'weekly', times: 3 }, goal_label: '健康體態' },
+    { emoji: '💧', title: '喝水', desc: '每天喝水 8 杯', difficulty: 'easy', frequency: { type: 'daily' }, goal_label: '健康體態' },
+    { emoji: '🌙', title: '早睡', desc: '每天 11 點前入睡', difficulty: 'medium', frequency: { type: 'daily' }, goal_label: '健康體態' },
+  ] },
+  { key: '學習', emoji: '📚', habits: [
+    { emoji: '🇯🇵', title: '日文', desc: '每天日文 30 分鐘', difficulty: 'medium', frequency: { type: 'daily' }, goal_label: '語言學習' },
+    { emoji: '📖', title: '閱讀', desc: '每天閱讀 20 分鐘', difficulty: 'easy', frequency: { type: 'daily' }, goal_label: '技能進修' },
+    { emoji: '💻', title: '寫程式', desc: '每天寫程式 30 分鐘', difficulty: 'hard', frequency: { type: 'daily' }, goal_label: '技能進修' },
+  ] },
+  { key: '工作', emoji: '💼', habits: [
+    { emoji: '🎯', title: '求職行動', desc: '每週求職行動 1 次', difficulty: 'medium', frequency: { type: 'weekly', times: 1 }, goal_label: '技能進修' },
+    { emoji: '🍅', title: '番茄鐘', desc: '每天 1 個專注番茄鐘', difficulty: 'easy', frequency: { type: 'daily' }, goal_label: '技能進修' },
+    { emoji: '📝', title: '列待辦', desc: '每天列出今日待辦', difficulty: 'easy', frequency: { type: 'daily' }, goal_label: '技能進修' },
+  ] },
+  { key: '心靈', emoji: '🧘', habits: [
+    { emoji: '🧘', title: '冥想', desc: '每天靜心 10 分鐘', difficulty: 'easy', frequency: { type: 'daily' }, goal_label: '身心平衡' },
+    { emoji: '✍️', title: '寫日記', desc: '每天寫日記', difficulty: 'easy', frequency: { type: 'daily' }, goal_label: '創意表達' },
+    { emoji: '🙏', title: '感恩', desc: '每天寫下 3 件感恩', difficulty: 'easy', frequency: { type: 'daily' }, goal_label: '身心平衡' },
+  ] },
+];
+
+// Web Speech API — null in unsupported browsers, so the mic button hides itself
+const SpeechRec = typeof window !== 'undefined' ? (window.SpeechRecognition || window.webkitSpeechRecognition) : null;
+
+// Map a template/chip object to a habits-table row (schema-matching)
+const habitRow = (t) => ({
+  title: `${t.emoji} ${t.title}`,
+  description: t.desc || '',
+  difficulty: t.difficulty || 'medium',
+  fund_per_day: diffFund(t.difficulty || 'medium'),
+  frequency: t.frequency || { type: 'daily' },
+  goal_label: t.goal_label || null,
+  is_active: true,
+});
+
 function Onboarding({ authUser, onDone, toast }) {
-  const [step, setStep] = useState(0);
+  // ── All hooks (must precede any return) ──
+  const [entry, setEntry] = useState(null); // null=hub | 'quick' | 'survey' | 'ai'
+  const [loading, setLoading] = useState(false);
   const [name, setName] = useState('');
-  // 最多 3 個目標
+  // quick
+  const [quickSel, setQuickSel] = useState(new Set());
+  // survey
+  const [surveyStep, setSurveyStep] = useState(0);
+  const [domains, setDomains] = useState([]);
+  const [surveySel, setSurveySel] = useState(new Set());
+  const [customText, setCustomText] = useState('');
+  const [customHabits, setCustomHabits] = useState([]);
+  const recRef = useRef(null);
+  // ai
+  const [aiStep, setAiStep] = useState(0);
   const [goals, setGoals] = useState([{ category: '', text: '', deadline: '', level: '', timePerDay: '' }]);
-  // 生活習慣
   const [schedule, setSchedule] = useState([]);
   const [obstacles, setObstacles] = useState([]);
   const [style, setStyle] = useState([]);
-  // 結果
   const [suggestions, setSuggestions] = useState([]);
   const [selected, setSelected] = useState(new Set());
-  const [loading, setLoading] = useState(false);
-  const [smartReviews, setSmartReviews] = useState(null); // null | Array<{specific,measurable,timeBound,identity,rewrite}>
-  const [smartIdentities, setSmartIdentities] = useState([]); // user-edited identity per goal
-  const [smartMeasurables, setSmartMeasurables] = useState([]); // user-filled measurable per goal
+  const [aiError, setAiError] = useState(false);
 
-  const toggleArr = (arr, setArr) => v =>
-    setArr(a => a.includes(v) ? a.filter(x => x !== v) : [...a, v]);
-
-  const updateGoal = (i, val) => {
-    if (val === null) {
-      setGoals(g => g.filter((_, idx) => idx !== i));
-    } else {
-      setGoals(g => g.map((g2, idx) => idx === i ? val : g2));
+  // Shared: create the user row, insert the chosen habits, then finish.
+  const createAll = async (rows, values = {}) => {
+    if (!rows.length) { toast('請至少選擇一個習慣 😊'); return; }
+    setLoading(true);
+    try {
+      const users = await supa.post('users', {
+        id: authUser.id,
+        name: name.trim() || authUser.email?.split('@')[0] || '朋友',
+        values_answers: values,
+      });
+      const user = users[0];
+      for (const r of rows) await supa.post('habits', { ...r, user_id: user.id });
+      onDone(user);
+      toast('歡迎！你的習慣旅程開始了 🌱');
+    } catch (e) {
+      console.error('createAll error:', e);
+      const msg = e?.message || '';
+      if (msg.includes('row-level security') || msg.includes('RLS') || msg.includes('permission')) toast('⚠️ 資料庫權限錯誤：請在 Supabase 關閉 RLS');
+      else if (msg.includes('relation') || msg.includes('does not exist')) toast('⚠️ 資料表不存在：請先執行建表 SQL');
+      else toast('儲存失敗：' + (msg.slice(0, 50) || '請查看 console'));
+      setLoading(false);
     }
   };
 
-  const addGoal = () => {
-    if (goals.length >= 3) { toast('最多設定 3 個目標'); return; }
-    setGoals(g => [...g, { category: '', text: '', deadline: '', level: '', timePerDay: '' }]);
-  };
+  // Shared header with a "back to hub" link
+  const header = (kicker, title, subtitle) => (
+    <div style={{ padding: '8px 0 16px' }}>
+      <button onClick={() => setEntry(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#A08B7A', fontSize: 13, padding: 0, marginBottom: 10, fontFamily: 'inherit' }}>← 換個方式</button>
+      {kicker && <p style={{ ...S.muted, fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 500 }}>{kicker}</p>}
+      <div style={{ ...S.h2, marginTop: 6 }}>{title}</div>
+      {subtitle && <p style={{ ...S.muted, fontSize: 13, marginTop: 6 }}>{subtitle}</p>}
+    </div>
+  );
 
-  const canProceed = () => {
-    if (step === 0) return name.trim().length > 0;
-    if (step === 1) return goals.every(g => g.text.trim()) && goals.some(g => g.text.trim());
-    if (step === 2) return schedule.length > 0;
-    if (step === 3) return obstacles.length > 0;
-    return true;
-  };
+  // ── Hub: three big cards ──
+  if (entry === null) return (
+    <div style={S.bg}><div style={S.app}>
+      <div style={{ padding: '16px 0 22px' }}>
+        <div style={S.display}>你好，<br />準備好<br /><em style={{ color: '#5AA37F', fontStyle: 'italic' }}>開始了嗎？</em></div>
+        <p style={{ ...S.muted, marginTop: 14, lineHeight: 1.7 }}>選一個最適合你的方式，<br />30 秒內就能開始。</p>
+      </div>
+      {[
+        { key: 'quick', emoji: '⚡', title: '快速開始', sub: '從熱門習慣挑選，一鍵建立', badge: '最快 · 推薦', hi: true },
+        { key: 'survey', emoji: '📝', title: '快速問卷', sub: '回答 3 個問題，全程用點的', badge: '3 步' },
+        { key: 'ai', emoji: '✨', title: 'AI 幫我規劃', sub: '描述你的目標，AI 客製化', badge: '客製化' },
+      ].map(c => (
+        <div key={c.key} className="cozy-card" onClick={() => setEntry(c.key)}
+          style={{ ...S.card, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 16, border: `2px solid ${c.hi ? C.leaf : C.border}`, background: c.hi ? '#E6F2EB' : C.paper }}>
+          <div style={{ fontSize: 34 }}>{c.emoji}</div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: 17 }}>{c.title}</div>
+            <div style={{ ...S.muted, fontSize: 13, marginTop: 2 }}>{c.sub}</div>
+          </div>
+          <div style={{ fontSize: 11, fontWeight: 600, color: c.hi ? C.leaf : C.muted, background: c.hi ? '#CDE7D8' : '#FDFBF7', padding: '4px 10px', borderRadius: 100, whiteSpace: 'nowrap' }}>{c.badge}</div>
+        </div>
+      ))}
+    </div></div>
+  );
 
-  const next = async () => {
-    if (!canProceed()) {
-      const msgs = ['請輸入你的名字 😊', '請至少填寫一個具體目標', '請選擇你的作息時段', '請選擇你面臨的障礙'];
-      toast(msgs[step] || '請完成此步驟');
-      return;
-    }
+  // ── Mode 1: quick-start template wall (zero typing) ──
+  if (entry === 'quick') {
+    const toggle = i => setQuickSel(s => { const n = new Set(s); n.has(i) ? n.delete(i) : n.add(i); return n; });
+    return (
+      <div style={S.bg}><div style={S.app}>
+        {header('快速開始', <>挑幾個想養成的<br />好習慣</>, '點一下就選取，選完直接建立（可多選）')}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 10 }}>
+          {QUICK_TEMPLATES.map((t, i) => {
+            const sel = quickSel.has(i);
+            return (
+              <div key={i} className="cozy-card" onClick={() => toggle(i)}
+                style={{ ...S.card, marginBottom: 0, padding: 16, cursor: 'pointer', textAlign: 'center', border: `1.5px solid ${sel ? C.leaf : C.border}`, background: sel ? '#E6F2EB' : C.paper }}>
+                <div style={{ fontSize: 30, marginBottom: 6 }}>{t.emoji}</div>
+                <div style={{ fontWeight: 600, fontSize: 15 }}>{t.title}</div>
+                <div style={{ ...S.muted, fontSize: 12, marginTop: 2 }}>{t.desc}</div>
+                {sel && <div style={{ color: C.leaf, fontWeight: 700, marginTop: 6 }}>✓</div>}
+              </div>
+            );
+          })}
+        </div>
+        <button style={{ ...S.btn('primary'), width: '100%', marginTop: 20 }} disabled={loading}
+          onClick={() => createAll([...quickSel].map(i => habitRow(QUICK_TEMPLATES[i])), { mode: 'quick' })}>
+          {loading ? '建立中…' : `建立${quickSel.size ? ` (${quickSel.size})` : ''} →`}
+        </button>
+      </div></div>
+    );
+  }
 
-    if (step === 3) {
-      // Generate habits
-      setStep(4); setLoading(true);
+  // ── Mode 2: quick questionnaire (≤3 chip-only steps) ──
+  if (entry === 'survey') {
+    const chosen = SURVEY_DOMAINS.filter(d => domains.includes(d.key));
+    const toggleDomain = k => setDomains(a => a.includes(k) ? a.filter(x => x !== k) : [...a, k]);
+    const toggleHab = k => setSurveySel(s => { const n = new Set(s); n.has(k) ? n.delete(k) : n.add(k); return n; });
+    const rows = () => {
+      const out = [];
+      chosen.forEach(d => d.habits.forEach((h, hi) => { if (surveySel.has(`${d.key}-${hi}`)) out.push(habitRow(h)); }));
+      customHabits.forEach(c => out.push(habitRow({ emoji: '⭐', title: c, desc: '', difficulty: 'medium', frequency: { type: 'daily' }, goal_label: '自訂' })));
+      return out;
+    };
+    const addCustom = () => { const v = customText.trim(); if (!v) return; setCustomHabits(a => [...a, v]); setCustomText(''); };
+    const startMic = () => {
+      if (!SpeechRec) return;
       try {
-        const goalsText = goals.filter(g => g.text.trim()).map((g, i) =>
-          `目標${i + 1}：${g.category ? `【${g.category}】` : ''}${g.text}` +
-          (g.deadline ? `，希望在${g.deadline}達成` : '') +
-          (g.level ? `，目前程度：${g.level}` : '') +
-          (g.timePerDay ? `，每天可投入：${g.timePerDay}` : '')
-        ).join('\n');
+        const rec = new SpeechRec();
+        rec.lang = 'zh-TW'; rec.interimResults = false; rec.maxAlternatives = 1;
+        rec.onresult = e => setCustomText(e.results[0][0].transcript);
+        rec.onerror = () => toast('語音辨識失敗，請再試一次');
+        rec.start(); recRef.current = rec;
+      } catch { toast('語音辨識無法啟動'); }
+    };
 
-        const prompt = `你是一位專業的習慣設計師。請根據以下使用者資訊，為他設計每日微習慣計劃。
+    const steps = [
+      // Step 0: pick domains
+      <div key={0}>
+        {header('快速問卷', <>你想從哪些<br />領域開始？</>, '選擇你感興趣的方向（可多選）')}
+        <div className="cozy-card" style={S.card}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {SURVEY_DOMAINS.map(d => (
+              <div key={d.key} style={S.chip(domains.includes(d.key))} onClick={() => toggleDomain(d.key)}>{d.emoji} {d.key}</div>
+            ))}
+          </div>
+        </div>
+        <button style={{ ...S.btn('primary'), width: '100%', marginTop: 8 }} onClick={() => { if (!domains.length) { toast('請至少選一個領域'); return; } setSurveyStep(1); }}>繼續 →</button>
+      </div>,
+      // Step 1: pick concrete habits + custom (with mic)
+      <div key={1}>
+        {header('快速問卷', <>挑選具體<br />習慣</>, '每個領域選你想做的，或自己新增')}
+        {chosen.map(d => (
+          <div key={d.key} className="cozy-card" style={S.card}>
+            <label style={S.label}>{d.emoji} {d.key}</label>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+              {d.habits.map((h, hi) => {
+                const k = `${d.key}-${hi}`;
+                return <div key={k} style={S.chip(surveySel.has(k))} onClick={() => toggleHab(k)}>{h.emoji} {h.title}</div>;
+              })}
+            </div>
+          </div>
+        ))}
+        <div className="cozy-card" style={S.card}>
+          <label style={S.label}>自訂習慣（選填）</label>
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <input style={{ ...S.input, flex: 1 }} placeholder="例：每天散步 15 分鐘" value={customText}
+              onChange={e => setCustomText(e.target.value)} onKeyDown={e => e.key === 'Enter' && addCustom()} />
+            {SpeechRec && <button onClick={startMic} title="語音輸入" style={{ ...S.btn('secondary'), padding: '0 14px' }}>🎤</button>}
+            <button onClick={addCustom} style={{ ...S.btn('secondary'), padding: '0 16px' }}>＋</button>
+          </div>
+          {customHabits.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+              {customHabits.map((c, ci) => (
+                <span key={ci} style={{ ...S.chip(true), display: 'inline-flex', gap: 6 }}>
+                  ⭐ {c}<span onClick={() => setCustomHabits(a => a.filter((_, x) => x !== ci))} style={{ cursor: 'pointer' }}>×</span>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+        <div style={{ ...S.row, marginTop: 8 }}>
+          <button style={S.btn('secondary')} onClick={() => setSurveyStep(0)}>← 返回</button>
+          <button style={{ ...S.btn('primary'), flex: 1 }} onClick={() => { if (!rows().length) { toast('請至少選一個習慣'); return; } setSurveyStep(2); }}>繼續 →</button>
+        </div>
+      </div>,
+      // Step 2: confirm + create
+      (() => {
+        const r = rows();
+        return (
+          <div key={2}>
+            {header('快速問卷', <>確認你的<br />習慣清單</>, `共 ${r.length} 個習慣，開始養成吧`)}
+            {r.map((h, ri) => (
+              <div key={ri} className="cozy-card" style={{ ...S.card, display: 'flex', alignItems: 'center', gap: 12 }}>
+                <div style={{ flex: 1, fontWeight: 600 }}>{h.title}</div>
+                <span style={{ ...S.muted, fontSize: 12 }}>{h.frequency.type === 'daily' ? '每天' : `每週 ${h.frequency.times} 次`}</span>
+              </div>
+            ))}
+            <div style={{ ...S.row, marginTop: 8 }}>
+              <button style={S.btn('secondary')} onClick={() => setSurveyStep(1)}>← 返回</button>
+              <button style={{ ...S.btn('primary'), flex: 1 }} disabled={loading} onClick={() => createAll(r, { mode: 'survey', domains })}>{loading ? '建立中…' : '建立我的習慣 →'}</button>
+            </div>
+          </div>
+        );
+      })(),
+    ];
+    return <div style={S.bg}><div style={S.app}>{steps[surveyStep]}</div></div>;
+  }
+
+  // ── Mode 3: AI planning (condensed to 3 steps, with fallback on failure) ──
+  const validGoals = goals.filter(g => g.text.trim());
+  const toggleArr = (arr, set) => v => set(a => a.includes(v) ? a.filter(x => x !== v) : [...a, v]);
+
+  const generate = async () => {
+    setAiStep(2); setLoading(true); setAiError(false); setSuggestions([]);
+    try {
+      const goalsText = validGoals.map((g, i) =>
+        `目標${i + 1}：${g.category ? `【${g.category}】` : ''}${g.text}` +
+        (g.deadline ? `，希望在${g.deadline}達成` : '') +
+        (g.level ? `，目前程度：${g.level}` : '') +
+        (g.timePerDay ? `，每天可投入：${g.timePerDay}` : '')
+      ).join('\n');
+      const prompt = `你是一位專業的習慣設計師。請根據以下使用者資訊，為他設計每日微習慣計劃。
 
 【使用者資料】
-名字：${name}
+名字：${name || '朋友'}
 具體目標：
 ${goalsText}
-最佳作息時段：${schedule.join('、')}
-主要障礙：${obstacles.join('、')}
+最佳作息時段：${schedule.join('、') || '未填寫'}
+主要障礙：${obstacles.join('、') || '未填寫'}
 學習風格：${style.length ? style.join('、') : '未填寫'}
 
 【設計原則】
-1. 每個習慣必須「非常具體」，要包含：具體行動 + 工具/方式 + 時間長度 + 執行時機
+1. 每個習慣必須「非常具體」，包含：具體行動 + 工具/方式 + 時間長度 + 執行時機
 2. 習慣要直接對應使用者的目標，不能泛泛而談
 3. 要針對使用者的障礙設計克服策略
-4. 考慮使用者的可用時段安排執行時機
-5. 習慣要小到「今天就能開始」
-
-【範例格式（好的習慣）】
-- 不好：「每天學英文」
-- 好：「每天早上刷牙時，用 Anki App 複習 20 個西班牙文單字（約 10 分鐘）」
-
-- 不好：「每天看投資資訊」  
-- 好：「每天睡前用 YouTube 看一支美股分析影片（15-20分鐘），並在筆記本寫下 1 個今日學到的概念」
+4. 習慣要小到「今天就能開始」
 
 請回傳純 JSON 陣列（不含任何 markdown 或其他文字），提供 6 個習慣建議：
 [
@@ -447,473 +650,124 @@ ${goalsText}
   }
 ]
 goal_index 對應上面目標的序號（從 0 開始）`;
-
-        const res = await fetch('/api/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: 'claude-sonnet-4-20250514',
-            max_tokens: 2000,
-            messages: [{ role: 'user', content: prompt }]
-          })
-        });
-        const data = await res.json();
-        if (!res.ok || !data.content) throw new Error(data.error?.message || `API error ${res.status}`);
-        let text = data.content.map(i => i.text || '').join('').replace(/```json|```/g, '').trim();
-        setSuggestions(JSON.parse(text));
-      } catch (e) {
-        console.error(e);
-        toast('建議生成失敗，請重試');
-        setStep(3);
-      }
-      setLoading(false);
-      return;
-    }
-    if (step === 1) {
-      // Trigger SMART review before proceeding to step 2
-      const validGoals = goals.filter(g => g.text.trim());
-      setLoading(true);
-      try {
-        const reviews = await callSmartReview(validGoals);
-        setSmartReviews(reviews);
-        setSmartIdentities(reviews.map(r => r.identity || ''));
-        setSmartMeasurables(reviews.map(r => r.measurable || ''));
-      } catch (e) {
-        console.error(e);
-        toast('目標分析失敗，請重試');
-      }
-      setLoading(false);
-      return;
-    }
-    setStep(s => s + 1);
-  };
-
-  const confirmSmartReview = () => {
-    const validGoals = goals.filter(g => g.text.trim());
-    // Check all measurables are filled
-    const missing = smartMeasurables.findIndex((m, i) => !m.trim());
-    if (missing !== -1) {
-      toast(`請填寫目標 ${missing + 1} 的可衡量指標`);
-      return;
-    }
-    // Merge identity and smart into goals
-    const updatedGoals = goals.map(g => {
-      const vi = validGoals.findIndex(vg => vg.text === g.text);
-      if (vi === -1) return g;
-      const review = smartReviews[vi];
-      return {
-        ...g,
-        identity: smartIdentities[vi],
-        smart: {
-          specific: review.specific,
-          measurable: smartMeasurables[vi],
-          timeBound: review.timeBound,
-        }
-      };
-    });
-    setGoals(updatedGoals);
-    setSmartReviews(null);
-    setStep(2);
-  };
-
-  const confirmHabits = async () => {
-    if (!selected.size) { toast('請至少選擇一個習慣 😊'); return; }
-    setLoading(true);
-    try {
-      const users = await supa.post('users', {
-        id: authUser.id,
-        name: name.trim(),
-        values_answers: { goals, schedule, obstacles, style }
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 2000, messages: [{ role: 'user', content: prompt }] })
       });
-      const user = users[0];
-
-      // Resolve selected sids back to habit objects
-      const validGoals = goals.filter(g => g.text && g.text.trim());
-      const selectedHabits = [];
-      for (const sid of selected) {
-        if (sid.startsWith('extra-')) {
-          const hi = parseInt(sid.replace('extra-', ''));
-          const extraSugs = suggestions.filter(s => {
-            const gi = Number(s.goal_index);
-            return isNaN(gi) || gi >= validGoals.length;
-          });
-          if (extraSugs[hi]) selectedHabits.push(extraSugs[hi]);
-        } else {
-          const [giStr, hiStr] = sid.split('-');
-          const gi = parseInt(giStr), hi = parseInt(hiStr);
-          const goalSugs = suggestions.filter(s => Number(s.goal_index) === gi);
-          if (goalSugs[hi]) selectedHabits.push(goalSugs[hi]);
-        }
-      }
-
-      for (const h of selectedHabits) {
-        await supa.post('habits', {
-          user_id: user.id,
-          title: h.title,
-          description: `${h.description}${h.why ? '｜' + h.why : ''}`,
-          difficulty: h.difficulty,
-          fund_per_day: diffFund(h.difficulty)
-        });
-      }
-      onDone(user);
-      toast('歡迎！你的習慣旅程開始了 🌱');
+      const data = await res.json();
+      if (!res.ok || !data.content) throw new Error(data.error?.message || data.error || `API error ${res.status}`);
+      const text = data.content.map(i => i.text || '').join('').replace(/```json|```/g, '').trim();
+      setSuggestions(JSON.parse(text));
     } catch (e) {
-      console.error('confirmHabits error:', e);
-      const msg = e?.message || '';
-      if (msg.includes('row-level security') || msg.includes('RLS') || msg.includes('permission')) {
-        toast('⚠️ 資料庫權限錯誤：請在 Supabase 關閉 RLS');
-      } else if (msg.includes('relation') || msg.includes('does not exist')) {
-        toast('⚠️ 資料表不存在：請先執行建表 SQL');
-      } else if (msg.includes('null value') || msg.includes('violates')) {
-        toast('⚠️ 資料格式錯誤：' + msg.slice(0, 60));
-      } else {
-        toast('儲存失敗：' + (msg.slice(0, 50) || '請查看 console'));
-      }
-      setLoading(false);
+      console.error('AI generate error:', e);
+      setAiError(true);
     }
+    setLoading(false);
   };
 
-  const STEPS = [
-    { label: '你好', total: 4 },
-    { label: '你的目標', total: 4 },
-    { label: '生活節奏', total: 4 },
-    { label: '你的挑戰', total: 4 },
-    { label: '習慣建議', total: 4 },
-  ];
+  const buildAiRows = () => [...selected].map(idx => {
+    const h = suggestions[idx];
+    return {
+      title: h.title,
+      description: `${h.description}${h.why ? '｜' + h.why : ''}`,
+      difficulty: h.difficulty,
+      fund_per_day: diffFund(h.difficulty),
+      frequency: { type: 'daily' },
+      goal_label: validGoals[Number(h.goal_index)]?.text || null,
+      is_active: true,
+    };
+  });
 
-  const stepContent = [
-    // ── Step 0: Welcome + Name ──
+  const aiSteps = [
+    // Step 0: goals (+ optional name)
     <div key={0}>
-      <div style={{ padding: '16px 0 28px' }}>
-        <div style={S.display}>你好，<br />歡迎來到<br /><em style={{ color: '#5AA37F', fontStyle: 'italic' }}>好習慣基金</em></div>
-        <p style={{ ...S.muted, marginTop: 14, lineHeight: 1.7 }}>每一個你堅持的小習慣，<br />都能化成對世界的溫柔行動。</p>
-      </div>
+      {header('AI 規劃', <>告訴我你的<br />目標</>, '越具體，AI 的建議越貼近你')}
       <div className="cozy-card" style={S.card}>
-        <label style={S.label}>先告訴我你的名字</label>
-        <input style={S.input} placeholder="請輸入你的名字" value={name}
-          onChange={e => setName(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && next()} />
+        <label style={S.label}>你的名字（選填）</label>
+        <input style={S.input} placeholder="怎麼稱呼你？" value={name} onChange={e => setName(e.target.value)} />
       </div>
-    </div>,
-
-    // ── Step 1: Goals (up to 3) ──
-    <div key={1}>
-      <div style={{ padding: '8px 0 16px' }}>
-        <p style={{ ...S.muted, fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 500 }}>認識你的目標</p>
-        <div style={{ ...S.h2, marginTop: 6 }}>今年你最想<br />達成什麼？</div>
-        <p style={{ ...S.muted, fontSize: 13, marginTop: 6 }}>越具體越好，AI 才能給你真正有用的建議</p>
-      </div>
-
       {goals.map((g, i) => (
-        <GoalCard key={i} index={i} goal={g} onChange={v => updateGoal(i, v)} />
+        <GoalCard key={i} index={i} goal={g}
+          onChange={v => setGoals(gs => v === null ? gs.filter((_, x) => x !== i) : gs.map((g2, x) => x === i ? v : g2))} />
       ))}
-
       {goals.length < 3 && (
-        <button onClick={addGoal}
-          style={{ width: '100%', padding: 16, background: 'none', border: '1.5px dashed #EADFCF', borderRadius: 16, cursor: 'pointer', color: '#A08B7A', fontSize: 14, fontFamily: 'inherit' }}>
-          + 新增第 {goals.length + 1} 個目標（最多 3 個）
+        <button onClick={() => setGoals(g => [...g, { category: '', text: '', deadline: '', level: '', timePerDay: '' }])}
+          style={{ width: '100%', padding: 16, background: 'none', border: '1.5px dashed #EADFCF', borderRadius: 16, cursor: 'pointer', color: '#A08B7A', fontSize: 14, fontFamily: 'inherit', marginBottom: 14 }}>
+          + 新增目標（最多 3 個）
         </button>
       )}
+      <button style={{ ...S.btn('primary'), width: '100%' }} onClick={() => { if (!validGoals.length) { toast('請至少填寫一個目標'); return; } setAiStep(1); }}>繼續 →</button>
     </div>,
-
-    // ── Step 2: Schedule ──
-    <div key={2}>
-      <div style={{ padding: '8px 0 16px' }}>
-        <p style={{ ...S.muted, fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 500 }}>了解你的生活</p>
-        <div style={{ ...S.h2, marginTop: 6 }}>你通常什麼時候<br />最有精神、最有空？</div>
-        <p style={{ ...S.muted, fontSize: 13, marginTop: 6 }}>AI 會把習慣安排在最適合你的時段（可多選）</p>
-      </div>
+    // Step 1: rhythm + challenges (one screen)
+    <div key={1}>
+      {header('AI 規劃', <>你的節奏與<br />挑戰</>, '幫 AI 把習慣排進你的生活（皆可多選）')}
       <div className="cozy-card" style={S.card}>
         <label style={S.label}>最佳執行時段</label>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
-          {SCHEDULE_OPTIONS.map(o => (
-            <div key={o} style={S.chip(schedule.includes(o))} onClick={() => toggleArr(schedule, setSchedule)(o)}>{o}</div>
-          ))}
-        </div>
-      </div>
-    </div>,
-
-    // ── Step 3: Obstacles + Style ──
-    <div key={3}>
-      <div style={{ padding: '8px 0 16px' }}>
-        <p style={{ ...S.muted, fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 500 }}>了解你的挑戰</p>
-        <div style={{ ...S.h2, marginTop: 6 }}>你最常在哪裡卡關？<br />你怎麼被激勵？</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>{SCHEDULE_OPTIONS.map(o => <div key={o} style={S.chip(schedule.includes(o))} onClick={() => toggleArr(schedule, setSchedule)(o)}>{o}</div>)}</div>
       </div>
       <div className="cozy-card" style={S.card}>
-        <label style={S.label}>主要障礙（可多選）</label>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
-          {OBSTACLE_OPTIONS.map(o => (
-            <div key={o} style={S.chip(obstacles.includes(o))} onClick={() => toggleArr(obstacles, setObstacles)(o)}>{o}</div>
-          ))}
-        </div>
+        <label style={S.label}>主要障礙</label>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>{OBSTACLE_OPTIONS.map(o => <div key={o} style={S.chip(obstacles.includes(o))} onClick={() => toggleArr(obstacles, setObstacles)(o)}>{o}</div>)}</div>
       </div>
       <div className="cozy-card" style={S.card}>
-        <label style={S.label}>你的學習與執行風格（選填）</label>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
-          {STYLE_OPTIONS.map(o => (
-            <div key={o} style={S.chip(style.includes(o))} onClick={() => toggleArr(style, setStyle)(o)}>{o}</div>
-          ))}
-        </div>
+        <label style={S.label}>激勵風格（選填）</label>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>{STYLE_OPTIONS.map(o => <div key={o} style={S.chip(style.includes(o))} onClick={() => toggleArr(style, setStyle)(o)}>{o}</div>)}</div>
+      </div>
+      <div style={{ ...S.row, marginTop: 8 }}>
+        <button style={S.btn('secondary')} onClick={() => setAiStep(0)}>← 返回</button>
+        <button style={{ ...S.btn('primary'), flex: 1 }} disabled={loading} onClick={generate}>{loading ? '分析中…' : '生成我的習慣 ✦'}</button>
       </div>
     </div>,
-
-    // ── Step 4: AI Suggestions ──
-    <div key={4}>
-      <div style={{ padding: '8px 0 16px' }}>
-        <div style={S.h2}>專屬於你的<br />每日微習慣</div>
-        <p style={{ ...S.muted, marginTop: 6 }}>根據你的目標和生活節奏量身設計，選擇你想開始的（可多選）</p>
-      </div>
-
+    // Step 2: suggestions / loading / graceful failure fallback
+    <div key={2}>
+      {header('AI 規劃', <>專屬你的<br />每日微習慣</>, loading || aiError ? '' : '選擇你想開始的（可多選）')}
       {loading ? (
         <div style={{ textAlign: 'center', padding: 56, color: '#A08B7A' }}>
           <div style={{ fontSize: 36, marginBottom: 16, animation: 'spin 2s linear infinite', display: 'inline-block' }}>✦</div>
-          <p style={{ fontWeight: 500 }}>正在分析你的目標…</p>
-          <p style={{ fontSize: 13, marginTop: 6 }}>設計最適合你的具體習慣計劃</p>
+          <p style={{ fontWeight: 500 }}>正在為你設計習慣…</p>
+        </div>
+      ) : aiError ? (
+        <div className="cozy-card" style={{ ...S.card, textAlign: 'center' }}>
+          <div style={{ fontSize: 40, marginBottom: 12 }}>🌧️</div>
+          <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 8 }}>AI 暫時累了</div>
+          <p style={{ ...S.muted, fontSize: 13, lineHeight: 1.7, marginBottom: 18 }}>沒關係，我們可以先從熱門習慣開始，<br />之後隨時能再讓 AI 幫你規劃。</p>
+          <button style={{ ...S.btn('primary'), width: '100%' }} onClick={() => { setAiError(false); setEntry('quick'); }}>⚡ 改用快速開始 →</button>
+          <button style={{ ...S.btn('secondary'), width: '100%', marginTop: 10 }} onClick={generate}>再試一次</button>
         </div>
       ) : (
         <>
-          {/* Group by goal */}
-          {goals.filter(g => g.text.trim()).map((g, gi) => {
-            const goalSugs = suggestions.filter(s => s.goal_index === gi);
-            if (!goalSugs.length) return null;
+          {suggestions.map((h, idx) => {
+            const sel = selected.has(idx);
             return (
-              <div key={gi}>
-                <div style={{ ...S.row, marginBottom: 10, marginTop: gi > 0 ? 20 : 0 }}>
-                  <div style={{ background: '#FDFBF7', borderRadius: 8, padding: '4px 10px', fontSize: 12, color: '#A08B7A', fontWeight: 500 }}>
-                    {GOAL_CATEGORIES.find(c => c.label === g.category)?.emoji || '🎯'} 目標 {gi + 1}
-                  </div>
-                  <div style={{ fontSize: 13, fontWeight: 500, flex: 1 }}>{g.text}</div>
-                </div>
-                {goalSugs.map((h) => {
-                  const idx = suggestions.indexOf(h);
-                  const isSel = selected.has(idx);
-                  return (
-                    <div key={idx}
-                      className="cozy-card" style={{ ...S.card, cursor: 'pointer', border: `1.5px solid ${isSel ? '#5AA37F' : '#EADFCF'}`, background: isSel ? '#E6F2EB' : '#FFFDF9', transition: 'all .2s' }}
-                      onClick={() => setSelected(s => { const n = new Set(s); n.has(idx) ? n.delete(idx) : n.add(idx); return n; })}>
-                      <div style={{ ...S.row, marginBottom: 8 }}>
-                        <span style={{ background: diffBg(h.difficulty), color: diffColor(h.difficulty), padding: '3px 10px', borderRadius: 100, fontSize: 11, fontWeight: 500 }}>{diffLabel(h.difficulty)}</span>
-                        <span style={{ ...S.muted, fontSize: 12 }}>{h.duration}</span>
-                        <span style={{ ...S.muted, fontSize: 12 }}>⏰ {h.timing}</span>
-                        <div style={{ flex: 1 }} />
-                        {isSel && <span style={{ color: '#5AA37F', fontWeight: 700, fontSize: 16 }}>✓</span>}
-                      </div>
-                      <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 6 }}>{h.title}</div>
-                      <div style={{ fontSize: 13, color: '#6B5A4C', lineHeight: 1.6, marginBottom: 6 }}>{h.description}</div>
-                      <div style={{ fontSize: 12, color: '#5AA37F', background: '#E6F2EB', padding: '4px 10px', borderRadius: 8, display: 'inline-block' }}>💡 {h.why}</div>
-                    </div>
-                  );
-                })}
-              </div>
-            );
-          })}
-          {/* Show unmatched suggestions */}
-          {suggestions.filter(s => s.goal_index >= goals.filter(g => g.text.trim()).length).map((h) => {
-            const idx = suggestions.indexOf(h);
-            const isSel = selected.has(idx);
-            return (
-              <div key={idx}
-                className="cozy-card" style={{ ...S.card, cursor: 'pointer', border: `1.5px solid ${isSel ? '#5AA37F' : '#EADFCF'}`, background: isSel ? '#E6F2EB' : '#FFFDF9' }}
-                onClick={() => setSelected(s => { const n = new Set(s); n.has(idx) ? n.delete(idx) : n.add(idx); return n; })}>
-                <div style={{ ...S.row, marginBottom: 8 }}>
+              <div key={idx} className="cozy-card"
+                onClick={() => setSelected(s => { const n = new Set(s); n.has(idx) ? n.delete(idx) : n.add(idx); return n; })}
+                style={{ ...S.card, cursor: 'pointer', border: `1.5px solid ${sel ? '#5AA37F' : '#EADFCF'}`, background: sel ? '#E6F2EB' : '#FFFDF9' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
                   <span style={{ background: diffBg(h.difficulty), color: diffColor(h.difficulty), padding: '3px 10px', borderRadius: 100, fontSize: 11, fontWeight: 500 }}>{diffLabel(h.difficulty)}</span>
-                  <span style={{ ...S.muted, fontSize: 12 }}>{h.duration}</span>
-                  {isSel && <span style={{ color: '#5AA37F', fontWeight: 700, fontSize: 16, marginLeft: 'auto' }}>✓</span>}
+                  {h.duration && <span style={{ color: '#A08B7A', fontSize: 12 }}>{h.duration}</span>}
+                  {h.timing && <span style={{ color: '#A08B7A', fontSize: 12 }}>⏰ {h.timing}</span>}
+                  <div style={{ flex: 1 }} />
+                  {sel && <span style={{ color: '#5AA37F', fontWeight: 700, fontSize: 16 }}>✓</span>}
                 </div>
                 <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 6 }}>{h.title}</div>
-                <div style={{ fontSize: 13, color: '#6B5A4C', lineHeight: 1.6 }}>{h.description}</div>
+                <div style={{ fontSize: 13, color: '#6B5A4C', lineHeight: 1.6, marginBottom: 6 }}>{h.description}</div>
+                {h.why && <div style={{ fontSize: 12, color: '#5AA37F', background: '#E6F2EB', padding: '4px 10px', borderRadius: 8, display: 'inline-block' }}>💡 {h.why}</div>}
               </div>
             );
           })}
+          <div style={{ ...S.row, marginTop: 8 }}>
+            <button style={S.btn('secondary')} onClick={() => setAiStep(1)}>← 返回</button>
+            <button style={{ ...S.btn('primary'), flex: 1 }} disabled={loading} onClick={() => createAll(buildAiRows(), { mode: 'ai', goals, schedule, obstacles, style })}>開始我的旅程 →</button>
+          </div>
         </>
       )}
     </div>,
   ];
 
-  // Progress bar
-  const progress = step < 4 ? (step / 4) * 100 : 100;
-
-  // ── Step 4 rendered as live component (not static JSX) ──
-  const Step4 = () => (
-    <div>
-      <div style={{ padding: '8px 0 16px' }}>
-        <div style={S.h2}>專屬於你的<br />每日微習慣</div>
-        <p style={{ ...S.muted, marginTop: 6 }}>根據你的目標和生活節奏量身設計，選擇你想開始的（可多選）</p>
-      </div>
-      {loading ? (
-        <div style={{ textAlign: 'center', padding: 56, color: '#A08B7A' }}>
-          <div style={{ fontSize: 36, marginBottom: 16 }}>✦</div>
-          <p style={{ fontWeight: 500 }}>正在分析你的目標…</p>
-          <p style={{ fontSize: 13, marginTop: 6 }}>設計最適合你的具體習慣計劃</p>
-        </div>
-      ) : suggestions.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: 40, color: '#A08B7A' }}>
-          <p>載入中，請稍候…</p>
-        </div>
-      ) : (
-        <>
-          {goals.filter(g => g.text && g.text.trim()).map((g, gi) => {
-            const goalSugs = suggestions.filter(s => Number(s.goal_index) === gi);
-            if (!goalSugs.length) return null;
-            return (
-              <div key={gi} style={{ marginBottom: 8 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, marginTop: gi > 0 ? 20 : 0 }}>
-                  <div style={{ background: '#FDFBF7', borderRadius: 8, padding: '4px 10px', fontSize: 12, color: '#A08B7A', fontWeight: 500 }}>
-                    {GOAL_CATEGORIES.find(c => c.label === g.category)?.emoji || '🎯'} 目標 {gi + 1}
-                  </div>
-                  <div style={{ fontSize: 13, fontWeight: 500, flex: 1 }}>{g.text}</div>
-                </div>
-                {goalSugs.map((h, hi) => {
-                  const sid = `${gi}-${hi}`;
-                  const isSel = selected.has(sid);
-                  return (
-                    <div key={sid}
-                      className="cozy-card" style={{ ...S.card, cursor: 'pointer', border: `1.5px solid ${isSel ? '#5AA37F' : '#EADFCF'}`, background: isSel ? '#E6F2EB' : '#FFFDF9', transition: 'all .2s' }}
-                      onClick={() => setSelected(prev => { const n = new Set(prev); n.has(sid) ? n.delete(sid) : n.add(sid); return n; })}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
-                        <span style={{ background: diffBg(h.difficulty), color: diffColor(h.difficulty), padding: '3px 10px', borderRadius: 100, fontSize: 11, fontWeight: 500 }}>{diffLabel(h.difficulty)}</span>
-                        <span style={{ color: '#A08B7A', fontSize: 12 }}>{h.duration}</span>
-                        {h.timing && <span style={{ color: '#A08B7A', fontSize: 12 }}>⏰ {h.timing}</span>}
-                        <div style={{ flex: 1 }} />
-                        {isSel && <span style={{ color: '#5AA37F', fontWeight: 700, fontSize: 16 }}>✓</span>}
-                      </div>
-                      <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 6 }}>{h.title}</div>
-                      <div style={{ fontSize: 13, color: '#6B5A4C', lineHeight: 1.6, marginBottom: 8 }}>{h.description}</div>
-                      {h.why && <div style={{ fontSize: 12, color: '#5AA37F', background: '#E6F2EB', padding: '4px 10px', borderRadius: 8, display: 'inline-block' }}>💡 {h.why}</div>}
-                    </div>
-                  );
-                })}
-              </div>
-            );
-          })}
-          {/* suggestions without a matched goal */}
-          {suggestions.filter(s => {
-            const gi = Number(s.goal_index);
-            return isNaN(gi) || gi >= goals.filter(g => g.text && g.text.trim()).length;
-          }).map((h, hi) => {
-            const sid = `extra-${hi}`;
-            const isSel = selected.has(sid);
-            return (
-              <div key={sid}
-                className="cozy-card" style={{ ...S.card, cursor: 'pointer', border: `1.5px solid ${isSel ? '#5AA37F' : '#EADFCF'}`, background: isSel ? '#E6F2EB' : '#FFFDF9' }}
-                onClick={() => setSelected(prev => { const n = new Set(prev); n.has(sid) ? n.delete(sid) : n.add(sid); return n; })}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                  <span style={{ background: diffBg(h.difficulty), color: diffColor(h.difficulty), padding: '3px 10px', borderRadius: 100, fontSize: 11, fontWeight: 500 }}>{diffLabel(h.difficulty)}</span>
-                  <span style={{ color: '#A08B7A', fontSize: 12 }}>{h.duration}</span>
-                  {isSel && <span style={{ color: '#5AA37F', fontWeight: 700, fontSize: 16, marginLeft: 'auto' }}>✓</span>}
-                </div>
-                <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 6 }}>{h.title}</div>
-                <div style={{ fontSize: 13, color: '#6B5A4C', lineHeight: 1.6 }}>{h.description}</div>
-              </div>
-            );
-          })}
-        </>
-      )}
-    </div>
-  );
-
-  return (
-    <div style={S.bg}>
-      {/* Progress bar */}
-      {step > 0 && step < 4 && (
-        <div style={{ position: 'sticky', top: 0, background: '#FDFBF7', zIndex: 10, padding: '12px 20px 0' }}>
-          <div style={{ maxWidth: 680, margin: '0 auto' }}>
-            <div style={{ background: '#EADFCF', borderRadius: 100, height: 3 }}>
-              <div style={{ background: '#5AA37F', height: 3, borderRadius: 100, width: `${progress}%`, transition: 'width .4s ease' }} />
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div style={S.app}>
-        {step === 4 ? <Step4 /> : step === 1 && smartReviews !== null ? (
-          // ── SMART Review overlay ──
-          <div>
-            <div style={{ padding: '8px 0 16px' }}>
-              <p style={{ ...S.muted, fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 500 }}>目標審視</p>
-              <div style={{ ...S.h2, marginTop: 6 }}>讓目標更清晰</div>
-              <p style={{ ...S.muted, fontSize: 13, marginTop: 6 }}>AI 幫你確認目標是否具體可執行</p>
-            </div>
-            {goals.filter(g => g.text.trim()).map((g, i) => {
-              const review = smartReviews[i];
-              if (!review) return null;
-              const needsMeasurable = !review.measurable;
-              return (
-                <div key={i} className="cozy-card" style={{ ...S.card, marginBottom: 14 }}>
-                  <div style={{ fontWeight: 500, fontSize: 15, marginBottom: 12 }}>
-                    {GOAL_CATEGORIES.find(c => c.label === g.category)?.emoji || '🎯'} {g.text}
-                  </div>
-                  {review.rewrite && (
-                    <div style={{ background: '#FBF3D8', border: '1px solid #EBD9B2', borderRadius: 10, padding: '10px 14px', marginBottom: 12, fontSize: 13, color: '#C89043' }}>
-                      💡 建議改寫：「{review.rewrite}」
-                    </div>
-                  )}
-                  {[
-                    { key: 'specific', label: 'S 具體', value: review.specific },
-                    { key: 'measurable', label: 'M 可衡量', value: review.measurable, required: true },
-                    { key: 'timeBound', label: 'T 有時限', value: review.timeBound },
-                  ].map(({ key, label, value, required }) => (
-                    <div key={key} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 10 }}>
-                      <span style={{ fontSize: 16, flexShrink: 0 }}>{value ? '✅' : '❌'}</span>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 12, fontWeight: 500, color: '#A08B7A', marginBottom: 3 }}>{label}</div>
-                        {required && !value ? (
-                          <input
-                            style={{ ...S.input, fontSize: 13 }}
-                            placeholder="請填入具體數字或標準，例：每週跑 3 次、體重降 5kg"
-                            value={smartMeasurables[i] || ''}
-                            onChange={e => setSmartMeasurables(arr => arr.map((v, idx) => idx === i ? e.target.value : v))}
-                          />
-                        ) : (
-                          <div style={{ fontSize: 13, color: value ? '#4A3B31' : '#A08B7A' }}>
-                            {value || '未偵測到，請在目標描述中補充'}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                  <div style={{ marginTop: 14, borderTop: '1px solid #EADFCF', paddingTop: 12 }}>
-                    <label style={S.label}>身份認同句</label>
-                    <input
-                      style={{ ...S.input, marginTop: 6 }}
-                      value={smartIdentities[i] || ''}
-                      onChange={e => setSmartIdentities(arr => arr.map((v, idx) => idx === i ? e.target.value : v))}
-                      placeholder="我是一個..."
-                    />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        ) : stepContent[step]}
-        <div style={{ ...S.row, marginTop: 20 }}>
-          {step === 1 && smartReviews !== null ? (
-            <>
-              <button style={S.btn('secondary')} onClick={() => setSmartReviews(null)}>← 返回</button>
-              <button style={{ ...S.btn('primary'), flex: 1 }} onClick={confirmSmartReview}>確認目標 →</button>
-            </>
-          ) : (
-            <>
-              {step > 0 && step < 4 && (
-                <button style={S.btn('secondary')} onClick={() => setStep(s => s - 1)}>← 返回</button>
-              )}
-              {step < 4 && (
-                <button style={{ ...S.btn('primary'), flex: 1 }} onClick={next} disabled={loading}>
-                  {loading ? '分析中…' : step === 3 ? '生成我的習慣計劃 ✦' : '繼續 →'}
-                </button>
-              )}
-              {step === 4 && !loading && (
-                <button style={{ ...S.btn('primary'), flex: 1 }} onClick={confirmHabits}>
-                  開始我的旅程 →
-                </button>
-              )}
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  );
+  return <div style={S.bg}><div style={S.app}>{aiSteps[aiStep]}</div></div>;
 }
+
 
 // ── Month Calendar (all habits merged into one) ──────────
 const HABIT_DOT_COLORS = ['#A8D8B9', '#FBE790', '#A5DEE4', '#E8A08A', '#C9A98F', '#B5A8D9'];
@@ -1040,7 +894,7 @@ ${goalLines}`;
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-5',
       max_tokens: 1000,
       messages: [{ role: 'user', content: prompt }]
     })
@@ -1096,7 +950,7 @@ suggested_frequency 為 weekly 時，suggested_times 為每週建議次數（1-7
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 1500, messages: [{ role: 'user', content: prompt }] })
+        body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 1500, messages: [{ role: 'user', content: prompt }] })
       });
       const data = await res.json();
       if (!res.ok || !data.content) throw new Error(data.error?.message || 'API error');
