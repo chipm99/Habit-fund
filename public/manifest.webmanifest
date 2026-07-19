@@ -1,0 +1,17 @@
+{
+  "name": "好習慣基金",
+  "short_name": "習慣基金",
+  "description": "溫柔陪你養成每天的小習慣",
+  "lang": "zh-TW",
+  "display": "standalone",
+  "orientation": "portrait",
+  "start_url": "/",
+  "scope": "/",
+  "theme_color": "#FDFBF7",
+  "background_color": "#FDFBF7",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

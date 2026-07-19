@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { createClient } from '@supabase/supabase-js';
+import FluidBackground from './FluidBackground.jsx';
+import CheckinCelebration from './CheckinCelebration.jsx';
 
 const SUPABASE_URL = 'https://keenwhiygrrnxhllibxa.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_ZrftrM1kZGX3odvfJQG0Pw_jNriTgc6';
@@ -8,11 +10,13 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 // ── Supabase client ──────────────────────────────────────
 const supa = {
   async req(path, opts = {}) {
+    // RLS: authenticate REST calls as the logged-in user, not the anon key
+    const { data: { session } } = await supabase.auth.getSession();
     const res = await fetch(SUPABASE_URL + '/rest/v1/' + path, {
       ...opts,
       headers: {
         apikey: SUPABASE_KEY,
-        Authorization: 'Bearer ' + SUPABASE_KEY,
+        Authorization: 'Bearer ' + (session?.access_token || SUPABASE_KEY),
         'Content-Type': 'application/json',
         Prefer: opts.prefer || 'return=representation',
         ...opts.headers,
@@ -32,8 +36,18 @@ const supa = {
 const todayStr = () => new Date().toISOString().split('T')[0];
 const diffLabel = d => ({ easy: '輕鬆', medium: '適中', hard: '挑戰' }[d] || d);
 const diffFund = d => ({ easy: 5, medium: 10, hard: 20 }[d] || 10);
-const diffColor = d => ({ easy: '#2D6A4F', medium: '#B5935A', hard: '#E76F51' }[d]);
-const diffBg = d => ({ easy: '#D8F3DC', medium: '#FDF3E3', hard: '#FDEBD0' }[d]);
+const diffColor = d => ({ easy: '#5AA37F', medium: '#C89043', hard: '#D98368' }[d]);
+const diffBg = d => ({ easy: '#E6F2EB', medium: '#FBF3D8', hard: '#F8E7DC' }[d]);
+
+// Web Push: VAPID applicationServerKey must be a Uint8Array (URL-safe base64 → bytes).
+const urlBase64ToUint8Array = (base64String) => {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+};
 
 const weekStart = () => {
   const d = new Date();
@@ -59,7 +73,7 @@ const getWeeklyStreak = (habitId, checkins, times) => {
   d.setHours(0, 0, 0, 0);
   for (let w = 1; w <= 52; w++) {
     const end = new Date(d);
-    end.setDate(d.getDate() - ((d.getDay() + 6) % 7) - (w - 1) * 7);
+    end.setDate(d.getDate() - ((d.getDay() + 6) % 7) - (w - 1) * 7 - 1); // Sunday of week w ago (Mon–Sun weeks, aligned with getWeeklyCount/getWeeklyStatus)
     const start = new Date(end);
     start.setDate(end.getDate() - 6);
     const ws = start.toISOString().split('T')[0];
@@ -73,6 +87,29 @@ const getWeeklyStreak = (habitId, checkins, times) => {
     else break;
   }
   return streak;
+};
+
+// Return 'green'|'yellow'|'red'|null for a weekly habit on a given weekOffset (0=this week, -1=last week…)
+// Week boundaries mirror getWeeklyStreak exactly (Monday-start, end = last Monday + 6 days back).
+const getWeeklyStatus = (habit, checkins, weekOffset = 0) => {
+  const freq = habit.frequency;
+  if (!freq || freq.type !== 'weekly') return null;
+  const times = freq.times || 1;
+  const createdAt = habit.created_at ? habit.created_at.split('T')[0] : '1970-01-01';
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  const mondayOffset = (d.getDay() + 6) % 7;
+  const thisMon = new Date(d); thisMon.setDate(d.getDate() - mondayOffset);
+  // Shift back by weekOffset weeks (weekOffset=0 → thisMon, weekOffset=-1 → thisMon-7)
+  const weekStart = new Date(thisMon); weekStart.setDate(thisMon.getDate() + weekOffset * 7);
+  const weekEnd = new Date(weekStart); weekEnd.setDate(weekStart.getDate() + 6);
+  const ws = weekStart.toISOString().split('T')[0];
+  const we = weekEnd.toISOString().split('T')[0];
+  if (we < createdAt) return null;
+  const count = checkins.filter(c => c.habit_id === habit.id && c.checked_date >= ws && c.checked_date <= we).length;
+  if (count >= times) return 'green';
+  if (count >= Math.max(2, times - 1)) return 'yellow';
+  return 'red';
 };
 
 function getStreak(habitId, checkins) {
@@ -119,29 +156,55 @@ function useToast() {
   return { msg, show, toast };
 }
 
-// ── Styles (inline) ──────────────────────────────────────
+// ── Cozy Morning Sun palette ─────────────────────────────
+const C = {
+  cream:    '#FDFBF7', // page base
+  ivory:    '#F7F4EB', // warm ivory
+  paper:    '#FFFDF9', // card paper
+  lemon:    '#FBE790', // soft lemon (primary sunshine)
+  lemonDeep:'#E8C94F', // readable lemon (weekly "yellow" status)
+  mint:     '#A8D8B9', // mint accent
+  leaf:     '#5AA37F', // readable mint-green (positive / "green" status)
+  sky:      '#A5DEE4', // sky blue accent
+  cinnamon: '#8A6B58', // soft text + hand-drawn borders
+  ink:      '#4A3B31', // body text (deep cocoa)
+  muted:    '#A08B7A', // muted text
+  line:     '#EADFCF', // hairline dividers
+  border:   '#E7D8C4', // hand-drawn card border
+  coral:    '#E8A08A', // soft coral ("red" status)
+  coralDeep:'#D98368', // warm button / spend
+  honey:    '#C89043', // fund gold numbers
+};
+
+// ── Styles (inline) — Japanese hand-drawn "zakka" look ────
 const S = {
-  bg: { background: '#F7F5F2', minHeight: '100vh', fontFamily: "'DM Sans', 'Helvetica Neue', sans-serif", fontSize: 15, color: '#1A1714' },
-  app: { maxWidth: 680, margin: '0 auto', padding: '28px 20px 100px' },
-  card: { background: '#fff', border: '1px solid #E8E4DF', borderRadius: 16, padding: 24, boxShadow: '0 2px 20px rgba(0,0,0,0.06)', marginBottom: 14 },
+  // transparent so the paper canvas (fixed, z-index bottom) shows through.
+  bg: { background: 'transparent', minHeight: '100vh', fontFamily: "'DM Sans', 'Helvetica Neue', sans-serif", fontSize: 15, color: C.ink },
+  app: { maxWidth: 680, margin: '0 auto', padding: '28px 20px 108px', position: 'relative', zIndex: 1 },
+  // torn-sketchbook card: warm paper, softly irregular hand-drawn corners, and a hard 0-blur
+  // cinnamon "outline copy" offset down-right that mimics stacked paper (not a normal box-shadow).
+  card: { background: C.paper, border: `1.5px solid ${C.border}`, borderRadius: '20px 22px 16px 24px', padding: 22, boxShadow: `3px 4px 0 #EFE1CE, 0 2px 8px rgba(138,107,88,0.05)`, marginBottom: 14 },
   btn: (type = 'primary') => ({
     display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-    padding: '11px 24px', borderRadius: 100, fontFamily: 'inherit', fontSize: 14, fontWeight: 500,
-    cursor: 'pointer', border: 'none', transition: 'all .2s',
-    background: type === 'primary' ? '#2D6A4F' : type === 'warm' ? '#E76F51' : '#E8E4DF',
-    color: type === 'secondary' ? '#1A1714' : '#fff',
+    padding: '11px 22px', borderRadius: '16px 14px 17px 13px', fontFamily: 'inherit', fontSize: 14, fontWeight: 600,
+    cursor: 'pointer',
+    background: type === 'primary' ? C.lemon : type === 'warm' ? '#F6B7A6' : C.ivory,
+    color: type === 'warm' ? '#7A3A2A' : type === 'secondary' ? C.cinnamon : '#5A4433',
+    border: `1.5px solid ${type === 'primary' ? '#E8C05A' : type === 'warm' ? '#E79A82' : C.border}`,
+    boxShadow: type === 'secondary' ? `2px 3px 0 #EBDFCE` : type === 'warm' ? `2px 3px 0 #E4A08C` : `2px 3px 0 #E8C05A`,
   }),
-  input: { width: '100%', padding: '11px 14px', border: '1.5px solid #E8E4DF', borderRadius: 10, fontFamily: 'inherit', fontSize: 15, outline: 'none', background: '#fff', color: '#1A1714', boxSizing: 'border-box' },
-  label: { display: 'block', fontSize: 12, fontWeight: 500, color: '#8A857F', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' },
-  chip: (sel) => ({ padding: '8px 16px', borderRadius: 100, border: `1.5px solid ${sel ? '#2D6A4F' : '#E8E4DF'}`, background: sel ? '#D8F3DC' : '#fff', color: sel ? '#2D6A4F' : '#1A1714', cursor: 'pointer', fontSize: 14, fontWeight: sel ? 500 : 400, transition: 'all .2s', whiteSpace: 'nowrap' }),
-  display: { fontFamily: "'Georgia', serif", fontSize: '2rem', lineHeight: 1.25, fontWeight: 400 },
-  h2: { fontFamily: "'Georgia', serif", fontSize: '1.45rem', fontWeight: 400, marginBottom: 6 },
-  muted: { color: '#8A857F' },
-  nav: { position: 'fixed', bottom: 0, left: 0, right: 0, background: '#fff', borderTop: '1px solid #E8E4DF', display: 'flex', zIndex: 100 },
-  navBtn: (active) => ({ flex: 1, padding: '13px 8px 11px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 500, color: active ? '#2D6A4F' : '#8A857F', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, fontFamily: 'inherit' }),
+  input: { width: '100%', padding: '11px 14px', border: `1.5px solid ${C.border}`, borderRadius: '13px 11px 14px 12px', fontFamily: 'inherit', fontSize: 15, outline: 'none', background: C.paper, color: C.ink, boxSizing: 'border-box' },
+  label: { display: 'block', fontSize: 12, fontWeight: 600, color: C.cinnamon, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' },
+  chip: (sel) => ({ padding: '8px 16px', borderRadius: '15px 12px 16px 13px', border: `1.5px solid ${sel ? C.leaf : C.border}`, background: sel ? '#E6F2EB' : C.paper, color: sel ? C.leaf : C.ink, cursor: 'pointer', fontSize: 14, fontWeight: sel ? 600 : 400, whiteSpace: 'nowrap', boxShadow: sel ? `2px 2px 0 #CDE7D8` : 'none' }),
+  display: { fontFamily: "'Zen Maru Gothic', 'DM Sans', sans-serif", fontSize: '2.05rem', lineHeight: 1.28, fontWeight: 700, letterSpacing: '0.005em' },
+  h2: { fontFamily: "'Zen Maru Gothic', 'DM Sans', sans-serif", fontSize: '1.5rem', fontWeight: 700, marginBottom: 6, letterSpacing: '0.005em' },
+  muted: { color: C.muted },
+  // nav: warm paper bar with a hand-drawn top edge.
+  nav: { position: 'fixed', bottom: 0, left: 0, right: 0, background: 'rgba(255,253,249,0.9)', backdropFilter: 'blur(12px) saturate(1.05)', WebkitBackdropFilter: 'blur(12px) saturate(1.05)', borderTop: `2px dashed ${C.border}`, display: 'flex', zIndex: 100 },
+  navBtn: (active) => ({ flex: 1, padding: '11px 8px 10px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600, color: active ? C.leaf : C.muted, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, fontFamily: "'Zen Maru Gothic', 'DM Sans', sans-serif" }),
   row: { display: 'flex', alignItems: 'center', gap: 12 },
-  modalBg: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(4px)', zIndex: 200, display: 'flex', alignItems: 'flex-end' },
-  modal: { background: '#fff', borderRadius: '24px 24px 0 0', padding: '28px 24px', width: '100%', maxHeight: '85vh', overflowY: 'auto' },
+  modalBg: { position: 'fixed', inset: 0, background: 'rgba(74,59,49,0.3)', backdropFilter: 'blur(5px)', WebkitBackdropFilter: 'blur(5px)', zIndex: 200, display: 'flex', alignItems: 'flex-end' },
+  modal: { background: C.cream, border: `1.5px solid ${C.border}`, borderBottom: 'none', borderRadius: '26px 22px 0 0', padding: '28px 24px', width: '100%', maxHeight: '85vh', overflowY: 'auto', boxShadow: '0 -6px 30px rgba(138,107,88,0.14)' },
 };
 
 // ── Login ────────────────────────────────────────────────
@@ -179,10 +242,10 @@ function Login({ toast }) {
     <div style={{ ...S.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh' }}>
       <div style={S.app}>
         <div style={{ padding: '16px 0 36px' }}>
-          <div style={S.display}>好習慣基金<br /><em style={{ color: '#2D6A4F', fontStyle: 'italic' }}>Habit Fund</em></div>
+          <div style={S.display}>好習慣基金<br /><em style={{ color: '#5AA37F', fontStyle: 'italic' }}>Habit Fund</em></div>
           <p style={{ ...S.muted, marginTop: 14, lineHeight: 1.7 }}>每一個你堅持的小習慣，<br />都能化成對世界的溫柔行動。</p>
         </div>
-        <div style={S.card}>
+        <div className="cozy-card" style={S.card}>
           <label style={S.label}>以 Email 登入 / 註冊</label>
           <input
             style={S.input}
@@ -230,12 +293,12 @@ const STYLE_OPTIONS = ['需要明確步驟', '喜歡有彈性', '靠數字和數
 function GoalCard({ index, goal, onChange }) {
   const cat = GOAL_CATEGORIES.find(c => c.label === goal.category);
   return (
-    <div style={{ ...S.card, border: '1.5px solid #E8E4DF' }}>
+    <div className="cozy-card" style={{ ...S.card, border: '1.5px solid #EADFCF' }}>
       <div style={{ ...S.row, marginBottom: 16 }}>
-        <div style={{ background: '#F7F5F2', borderRadius: 10, padding: '8px 12px', fontSize: 20 }}>{cat?.emoji || '🎯'}</div>
+        <div style={{ background: '#FDFBF7', borderRadius: 10, padding: '8px 12px', fontSize: 20 }}>{cat?.emoji || '🎯'}</div>
         <div style={{ flex: 1, fontWeight: 500 }}>目標 {index + 1}</div>
         {index > 0 && (
-          <button onClick={() => onChange(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#8A857F', fontSize: 20 }}>×</button>
+          <button onClick={() => onChange(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#A08B7A', fontSize: 20 }}>×</button>
         )}
       </div>
 
@@ -253,7 +316,7 @@ function GoalCard({ index, goal, onChange }) {
       </div>
 
       <div style={{ marginBottom: 14 }}>
-        <label style={S.label}>具體目標 <span style={{ color: '#2D6A4F' }}>*</span></label>
+        <label style={S.label}>具體目標 <span style={{ color: '#5AA37F' }}>*</span></label>
         <input style={S.input}
           placeholder={cat ? `例：${cat.examples.split('、')[0]}` : '請描述你的具體目標'}
           value={goal.text || ''}
@@ -522,10 +585,10 @@ goal_index 對應上面目標的序號（從 0 開始）`;
     // ── Step 0: Welcome + Name ──
     <div key={0}>
       <div style={{ padding: '16px 0 28px' }}>
-        <div style={S.display}>你好，<br />歡迎來到<br /><em style={{ color: '#2D6A4F', fontStyle: 'italic' }}>好習慣基金</em></div>
+        <div style={S.display}>你好，<br />歡迎來到<br /><em style={{ color: '#5AA37F', fontStyle: 'italic' }}>好習慣基金</em></div>
         <p style={{ ...S.muted, marginTop: 14, lineHeight: 1.7 }}>每一個你堅持的小習慣，<br />都能化成對世界的溫柔行動。</p>
       </div>
-      <div style={S.card}>
+      <div className="cozy-card" style={S.card}>
         <label style={S.label}>先告訴我你的名字</label>
         <input style={S.input} placeholder="請輸入你的名字" value={name}
           onChange={e => setName(e.target.value)}
@@ -547,7 +610,7 @@ goal_index 對應上面目標的序號（從 0 開始）`;
 
       {goals.length < 3 && (
         <button onClick={addGoal}
-          style={{ width: '100%', padding: 16, background: 'none', border: '1.5px dashed #E8E4DF', borderRadius: 16, cursor: 'pointer', color: '#8A857F', fontSize: 14, fontFamily: 'inherit' }}>
+          style={{ width: '100%', padding: 16, background: 'none', border: '1.5px dashed #EADFCF', borderRadius: 16, cursor: 'pointer', color: '#A08B7A', fontSize: 14, fontFamily: 'inherit' }}>
           + 新增第 {goals.length + 1} 個目標（最多 3 個）
         </button>
       )}
@@ -560,7 +623,7 @@ goal_index 對應上面目標的序號（從 0 開始）`;
         <div style={{ ...S.h2, marginTop: 6 }}>你通常什麼時候<br />最有精神、最有空？</div>
         <p style={{ ...S.muted, fontSize: 13, marginTop: 6 }}>AI 會把習慣安排在最適合你的時段（可多選）</p>
       </div>
-      <div style={S.card}>
+      <div className="cozy-card" style={S.card}>
         <label style={S.label}>最佳執行時段</label>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
           {SCHEDULE_OPTIONS.map(o => (
@@ -576,7 +639,7 @@ goal_index 對應上面目標的序號（從 0 開始）`;
         <p style={{ ...S.muted, fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 500 }}>了解你的挑戰</p>
         <div style={{ ...S.h2, marginTop: 6 }}>你最常在哪裡卡關？<br />你怎麼被激勵？</div>
       </div>
-      <div style={S.card}>
+      <div className="cozy-card" style={S.card}>
         <label style={S.label}>主要障礙（可多選）</label>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
           {OBSTACLE_OPTIONS.map(o => (
@@ -584,7 +647,7 @@ goal_index 對應上面目標的序號（從 0 開始）`;
           ))}
         </div>
       </div>
-      <div style={S.card}>
+      <div className="cozy-card" style={S.card}>
         <label style={S.label}>你的學習與執行風格（選填）</label>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
           {STYLE_OPTIONS.map(o => (
@@ -602,7 +665,7 @@ goal_index 對應上面目標的序號（從 0 開始）`;
       </div>
 
       {loading ? (
-        <div style={{ textAlign: 'center', padding: 56, color: '#8A857F' }}>
+        <div style={{ textAlign: 'center', padding: 56, color: '#A08B7A' }}>
           <div style={{ fontSize: 36, marginBottom: 16, animation: 'spin 2s linear infinite', display: 'inline-block' }}>✦</div>
           <p style={{ fontWeight: 500 }}>正在分析你的目標…</p>
           <p style={{ fontSize: 13, marginTop: 6 }}>設計最適合你的具體習慣計劃</p>
@@ -616,7 +679,7 @@ goal_index 對應上面目標的序號（從 0 開始）`;
             return (
               <div key={gi}>
                 <div style={{ ...S.row, marginBottom: 10, marginTop: gi > 0 ? 20 : 0 }}>
-                  <div style={{ background: '#F7F5F2', borderRadius: 8, padding: '4px 10px', fontSize: 12, color: '#8A857F', fontWeight: 500 }}>
+                  <div style={{ background: '#FDFBF7', borderRadius: 8, padding: '4px 10px', fontSize: 12, color: '#A08B7A', fontWeight: 500 }}>
                     {GOAL_CATEGORIES.find(c => c.label === g.category)?.emoji || '🎯'} 目標 {gi + 1}
                   </div>
                   <div style={{ fontSize: 13, fontWeight: 500, flex: 1 }}>{g.text}</div>
@@ -626,18 +689,18 @@ goal_index 對應上面目標的序號（從 0 開始）`;
                   const isSel = selected.has(idx);
                   return (
                     <div key={idx}
-                      style={{ ...S.card, cursor: 'pointer', border: `1.5px solid ${isSel ? '#2D6A4F' : '#E8E4DF'}`, background: isSel ? '#D8F3DC' : '#fff', transition: 'all .2s' }}
+                      className="cozy-card" style={{ ...S.card, cursor: 'pointer', border: `1.5px solid ${isSel ? '#5AA37F' : '#EADFCF'}`, background: isSel ? '#E6F2EB' : '#FFFDF9', transition: 'all .2s' }}
                       onClick={() => setSelected(s => { const n = new Set(s); n.has(idx) ? n.delete(idx) : n.add(idx); return n; })}>
                       <div style={{ ...S.row, marginBottom: 8 }}>
                         <span style={{ background: diffBg(h.difficulty), color: diffColor(h.difficulty), padding: '3px 10px', borderRadius: 100, fontSize: 11, fontWeight: 500 }}>{diffLabel(h.difficulty)}</span>
                         <span style={{ ...S.muted, fontSize: 12 }}>{h.duration}</span>
                         <span style={{ ...S.muted, fontSize: 12 }}>⏰ {h.timing}</span>
                         <div style={{ flex: 1 }} />
-                        {isSel && <span style={{ color: '#2D6A4F', fontWeight: 700, fontSize: 16 }}>✓</span>}
+                        {isSel && <span style={{ color: '#5AA37F', fontWeight: 700, fontSize: 16 }}>✓</span>}
                       </div>
                       <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 6 }}>{h.title}</div>
-                      <div style={{ fontSize: 13, color: '#444', lineHeight: 1.6, marginBottom: 6 }}>{h.description}</div>
-                      <div style={{ fontSize: 12, color: '#2D6A4F', background: '#D8F3DC', padding: '4px 10px', borderRadius: 8, display: 'inline-block' }}>💡 {h.why}</div>
+                      <div style={{ fontSize: 13, color: '#6B5A4C', lineHeight: 1.6, marginBottom: 6 }}>{h.description}</div>
+                      <div style={{ fontSize: 12, color: '#5AA37F', background: '#E6F2EB', padding: '4px 10px', borderRadius: 8, display: 'inline-block' }}>💡 {h.why}</div>
                     </div>
                   );
                 })}
@@ -650,15 +713,15 @@ goal_index 對應上面目標的序號（從 0 開始）`;
             const isSel = selected.has(idx);
             return (
               <div key={idx}
-                style={{ ...S.card, cursor: 'pointer', border: `1.5px solid ${isSel ? '#2D6A4F' : '#E8E4DF'}`, background: isSel ? '#D8F3DC' : '#fff' }}
+                className="cozy-card" style={{ ...S.card, cursor: 'pointer', border: `1.5px solid ${isSel ? '#5AA37F' : '#EADFCF'}`, background: isSel ? '#E6F2EB' : '#FFFDF9' }}
                 onClick={() => setSelected(s => { const n = new Set(s); n.has(idx) ? n.delete(idx) : n.add(idx); return n; })}>
                 <div style={{ ...S.row, marginBottom: 8 }}>
                   <span style={{ background: diffBg(h.difficulty), color: diffColor(h.difficulty), padding: '3px 10px', borderRadius: 100, fontSize: 11, fontWeight: 500 }}>{diffLabel(h.difficulty)}</span>
                   <span style={{ ...S.muted, fontSize: 12 }}>{h.duration}</span>
-                  {isSel && <span style={{ color: '#2D6A4F', fontWeight: 700, fontSize: 16, marginLeft: 'auto' }}>✓</span>}
+                  {isSel && <span style={{ color: '#5AA37F', fontWeight: 700, fontSize: 16, marginLeft: 'auto' }}>✓</span>}
                 </div>
                 <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 6 }}>{h.title}</div>
-                <div style={{ fontSize: 13, color: '#444', lineHeight: 1.6 }}>{h.description}</div>
+                <div style={{ fontSize: 13, color: '#6B5A4C', lineHeight: 1.6 }}>{h.description}</div>
               </div>
             );
           })}
@@ -678,13 +741,13 @@ goal_index 對應上面目標的序號（從 0 開始）`;
         <p style={{ ...S.muted, marginTop: 6 }}>根據你的目標和生活節奏量身設計，選擇你想開始的（可多選）</p>
       </div>
       {loading ? (
-        <div style={{ textAlign: 'center', padding: 56, color: '#8A857F' }}>
+        <div style={{ textAlign: 'center', padding: 56, color: '#A08B7A' }}>
           <div style={{ fontSize: 36, marginBottom: 16 }}>✦</div>
           <p style={{ fontWeight: 500 }}>正在分析你的目標…</p>
           <p style={{ fontSize: 13, marginTop: 6 }}>設計最適合你的具體習慣計劃</p>
         </div>
       ) : suggestions.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: 40, color: '#8A857F' }}>
+        <div style={{ textAlign: 'center', padding: 40, color: '#A08B7A' }}>
           <p>載入中，請稍候…</p>
         </div>
       ) : (
@@ -695,7 +758,7 @@ goal_index 對應上面目標的序號（從 0 開始）`;
             return (
               <div key={gi} style={{ marginBottom: 8 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, marginTop: gi > 0 ? 20 : 0 }}>
-                  <div style={{ background: '#F7F5F2', borderRadius: 8, padding: '4px 10px', fontSize: 12, color: '#8A857F', fontWeight: 500 }}>
+                  <div style={{ background: '#FDFBF7', borderRadius: 8, padding: '4px 10px', fontSize: 12, color: '#A08B7A', fontWeight: 500 }}>
                     {GOAL_CATEGORIES.find(c => c.label === g.category)?.emoji || '🎯'} 目標 {gi + 1}
                   </div>
                   <div style={{ fontSize: 13, fontWeight: 500, flex: 1 }}>{g.text}</div>
@@ -705,18 +768,18 @@ goal_index 對應上面目標的序號（從 0 開始）`;
                   const isSel = selected.has(sid);
                   return (
                     <div key={sid}
-                      style={{ ...S.card, cursor: 'pointer', border: `1.5px solid ${isSel ? '#2D6A4F' : '#E8E4DF'}`, background: isSel ? '#D8F3DC' : '#fff', transition: 'all .2s' }}
+                      className="cozy-card" style={{ ...S.card, cursor: 'pointer', border: `1.5px solid ${isSel ? '#5AA37F' : '#EADFCF'}`, background: isSel ? '#E6F2EB' : '#FFFDF9', transition: 'all .2s' }}
                       onClick={() => setSelected(prev => { const n = new Set(prev); n.has(sid) ? n.delete(sid) : n.add(sid); return n; })}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
                         <span style={{ background: diffBg(h.difficulty), color: diffColor(h.difficulty), padding: '3px 10px', borderRadius: 100, fontSize: 11, fontWeight: 500 }}>{diffLabel(h.difficulty)}</span>
-                        <span style={{ color: '#8A857F', fontSize: 12 }}>{h.duration}</span>
-                        {h.timing && <span style={{ color: '#8A857F', fontSize: 12 }}>⏰ {h.timing}</span>}
+                        <span style={{ color: '#A08B7A', fontSize: 12 }}>{h.duration}</span>
+                        {h.timing && <span style={{ color: '#A08B7A', fontSize: 12 }}>⏰ {h.timing}</span>}
                         <div style={{ flex: 1 }} />
-                        {isSel && <span style={{ color: '#2D6A4F', fontWeight: 700, fontSize: 16 }}>✓</span>}
+                        {isSel && <span style={{ color: '#5AA37F', fontWeight: 700, fontSize: 16 }}>✓</span>}
                       </div>
                       <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 6 }}>{h.title}</div>
-                      <div style={{ fontSize: 13, color: '#444', lineHeight: 1.6, marginBottom: 8 }}>{h.description}</div>
-                      {h.why && <div style={{ fontSize: 12, color: '#2D6A4F', background: '#D8F3DC', padding: '4px 10px', borderRadius: 8, display: 'inline-block' }}>💡 {h.why}</div>}
+                      <div style={{ fontSize: 13, color: '#6B5A4C', lineHeight: 1.6, marginBottom: 8 }}>{h.description}</div>
+                      {h.why && <div style={{ fontSize: 12, color: '#5AA37F', background: '#E6F2EB', padding: '4px 10px', borderRadius: 8, display: 'inline-block' }}>💡 {h.why}</div>}
                     </div>
                   );
                 })}
@@ -732,15 +795,15 @@ goal_index 對應上面目標的序號（從 0 開始）`;
             const isSel = selected.has(sid);
             return (
               <div key={sid}
-                style={{ ...S.card, cursor: 'pointer', border: `1.5px solid ${isSel ? '#2D6A4F' : '#E8E4DF'}`, background: isSel ? '#D8F3DC' : '#fff' }}
+                className="cozy-card" style={{ ...S.card, cursor: 'pointer', border: `1.5px solid ${isSel ? '#5AA37F' : '#EADFCF'}`, background: isSel ? '#E6F2EB' : '#FFFDF9' }}
                 onClick={() => setSelected(prev => { const n = new Set(prev); n.has(sid) ? n.delete(sid) : n.add(sid); return n; })}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                   <span style={{ background: diffBg(h.difficulty), color: diffColor(h.difficulty), padding: '3px 10px', borderRadius: 100, fontSize: 11, fontWeight: 500 }}>{diffLabel(h.difficulty)}</span>
-                  <span style={{ color: '#8A857F', fontSize: 12 }}>{h.duration}</span>
-                  {isSel && <span style={{ color: '#2D6A4F', fontWeight: 700, fontSize: 16, marginLeft: 'auto' }}>✓</span>}
+                  <span style={{ color: '#A08B7A', fontSize: 12 }}>{h.duration}</span>
+                  {isSel && <span style={{ color: '#5AA37F', fontWeight: 700, fontSize: 16, marginLeft: 'auto' }}>✓</span>}
                 </div>
                 <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 6 }}>{h.title}</div>
-                <div style={{ fontSize: 13, color: '#444', lineHeight: 1.6 }}>{h.description}</div>
+                <div style={{ fontSize: 13, color: '#6B5A4C', lineHeight: 1.6 }}>{h.description}</div>
               </div>
             );
           })}
@@ -753,10 +816,10 @@ goal_index 對應上面目標的序號（從 0 開始）`;
     <div style={S.bg}>
       {/* Progress bar */}
       {step > 0 && step < 4 && (
-        <div style={{ position: 'sticky', top: 0, background: '#F7F5F2', zIndex: 10, padding: '12px 20px 0' }}>
+        <div style={{ position: 'sticky', top: 0, background: '#FDFBF7', zIndex: 10, padding: '12px 20px 0' }}>
           <div style={{ maxWidth: 680, margin: '0 auto' }}>
-            <div style={{ background: '#E8E4DF', borderRadius: 100, height: 3 }}>
-              <div style={{ background: '#2D6A4F', height: 3, borderRadius: 100, width: `${progress}%`, transition: 'width .4s ease' }} />
+            <div style={{ background: '#EADFCF', borderRadius: 100, height: 3 }}>
+              <div style={{ background: '#5AA37F', height: 3, borderRadius: 100, width: `${progress}%`, transition: 'width .4s ease' }} />
             </div>
           </div>
         </div>
@@ -776,12 +839,12 @@ goal_index 對應上面目標的序號（從 0 開始）`;
               if (!review) return null;
               const needsMeasurable = !review.measurable;
               return (
-                <div key={i} style={{ ...S.card, marginBottom: 14 }}>
+                <div key={i} className="cozy-card" style={{ ...S.card, marginBottom: 14 }}>
                   <div style={{ fontWeight: 500, fontSize: 15, marginBottom: 12 }}>
                     {GOAL_CATEGORIES.find(c => c.label === g.category)?.emoji || '🎯'} {g.text}
                   </div>
                   {review.rewrite && (
-                    <div style={{ background: '#FDF3E3', border: '1px solid #F0D9B5', borderRadius: 10, padding: '10px 14px', marginBottom: 12, fontSize: 13, color: '#B5935A' }}>
+                    <div style={{ background: '#FBF3D8', border: '1px solid #EBD9B2', borderRadius: 10, padding: '10px 14px', marginBottom: 12, fontSize: 13, color: '#C89043' }}>
                       💡 建議改寫：「{review.rewrite}」
                     </div>
                   )}
@@ -793,7 +856,7 @@ goal_index 對應上面目標的序號（從 0 開始）`;
                     <div key={key} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 10 }}>
                       <span style={{ fontSize: 16, flexShrink: 0 }}>{value ? '✅' : '❌'}</span>
                       <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 12, fontWeight: 500, color: '#8A857F', marginBottom: 3 }}>{label}</div>
+                        <div style={{ fontSize: 12, fontWeight: 500, color: '#A08B7A', marginBottom: 3 }}>{label}</div>
                         {required && !value ? (
                           <input
                             style={{ ...S.input, fontSize: 13 }}
@@ -802,14 +865,14 @@ goal_index 對應上面目標的序號（從 0 開始）`;
                             onChange={e => setSmartMeasurables(arr => arr.map((v, idx) => idx === i ? e.target.value : v))}
                           />
                         ) : (
-                          <div style={{ fontSize: 13, color: value ? '#1A1714' : '#8A857F' }}>
+                          <div style={{ fontSize: 13, color: value ? '#4A3B31' : '#A08B7A' }}>
                             {value || '未偵測到，請在目標描述中補充'}
                           </div>
                         )}
                       </div>
                     </div>
                   ))}
-                  <div style={{ marginTop: 14, borderTop: '1px solid #E8E4DF', paddingTop: 12 }}>
+                  <div style={{ marginTop: 14, borderTop: '1px solid #EADFCF', paddingTop: 12 }}>
                     <label style={S.label}>身份認同句</label>
                     <input
                       style={{ ...S.input, marginTop: 6 }}
@@ -852,37 +915,87 @@ goal_index 對應上面目標的序號（從 0 開始）`;
   );
 }
 
-// ── Mini Calendar ────────────────────────────────────────
-function MiniCalendar({ checkedDates }) {
+// ── Month Calendar (all habits merged into one) ──────────
+const HABIT_DOT_COLORS = ['#A8D8B9', '#FBE790', '#A5DEE4', '#E8A08A', '#C9A98F', '#B5A8D9'];
+
+function MonthCalendar({ habits, checkins }) {
+  const [offset, setOffset] = useState(0); // 0 = this month, negative = past months
   const days = ['日','一','二','三','四','五','六'];
   const today = todayStr();
-  const end = new Date(); end.setHours(0,0,0,0);
-  const start = new Date(end); start.setDate(end.getDate() - 34);
-  const startDay = start.getDay();
+
+  const base = new Date(); base.setHours(0, 0, 0, 0);
+  const first = new Date(base.getFullYear(), base.getMonth() + offset, 1);
+  const year = first.getFullYear();
+  const month = first.getMonth();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  const colorOf = {};
+  habits.forEach((h, i) => { colorOf[h.id] = HABIT_DOT_COLORS[i % HABIT_DOT_COLORS.length]; });
+
+  const byDate = {};
+  checkins.forEach(c => {
+    if (!colorOf[c.habit_id]) return; // ignore checkins of deleted habits
+    (byDate[c.checked_date] = byDate[c.checked_date] || []).push(c.habit_id);
+  });
+
   const cells = [];
-  for (let i = 0; i < startDay; i++) cells.push(null);
-  let d = new Date(start);
-  while (d <= end) {
-    cells.push(d.toISOString().split('T')[0]);
-    d.setDate(d.getDate() + 1);
+  for (let i = 0; i < first.getDay(); i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) {
+    cells.push(`${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`);
   }
+
+  const arrow = (label, enabled, onClick) => (
+    <button onClick={enabled ? onClick : undefined} style={{
+      border: '1.6px solid #EADFCF', background: '#FFFDF9', color: '#8A6B58',
+      borderRadius: '10px 6px 12px 7px', width: 30, height: 30, fontSize: 15, lineHeight: 1,
+      cursor: enabled ? 'pointer' : 'default', opacity: enabled ? 1 : 0.3, padding: 0,
+    }}>{label}</button>
+  );
+
   return (
     <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+        {arrow('‹', true, () => setOffset(o => o - 1))}
+        <div style={{ fontFamily: "'Zen Maru Gothic', sans-serif", fontWeight: 700, fontSize: 15, color: '#6B5544' }}>
+          {year} 年 {month + 1} 月
+        </div>
+        {arrow('›', offset < 0, () => setOffset(o => o + 1))}
+      </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7,1fr)', gap: 3, marginBottom: 4 }}>
-        {days.map(d => <div key={d} style={{ textAlign: 'center', fontSize: 10, color: '#8A857F', fontWeight: 500 }}>{d}</div>)}
+        {days.map(d => <div key={d} style={{ textAlign: 'center', fontSize: 10, color: '#A08B7A', fontWeight: 500 }}>{d}</div>)}
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7,1fr)', gap: 3 }}>
-        {cells.map((ds, i) => (
-          <div key={i} style={{
-            aspectRatio: '1', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11,
-            background: ds && checkedDates.has(ds) ? '#2D6A4F' : 'transparent',
-            color: ds && checkedDates.has(ds) ? '#fff' : '#8A857F',
-            outline: ds === today ? '2px solid #2D6A4F' : 'none',
-            outlineOffset: -2,
-            opacity: ds ? 1 : 0,
-          }}>{ds ? new Date(ds + 'T00:00:00').getDate() : ''}</div>
-        ))}
+        {cells.map((ds, i) => {
+          const ids = ds ? (byDate[ds] || []) : [];
+          const isFuture = ds && offset === 0 && ds > today;
+          return (
+            <div key={i} style={{
+              aspectRatio: '1', borderRadius: 8, display: 'flex', flexDirection: 'column',
+              alignItems: 'center', justifyContent: 'center', gap: 2,
+              outline: ds === today ? '2px solid #5AA37F' : 'none', outlineOffset: -2,
+              opacity: ds ? (isFuture ? 0.35 : 1) : 0,
+            }}>
+              <div style={{ fontSize: 11, color: '#8A6B58' }}>{ds ? parseInt(ds.slice(8), 10) : ''}</div>
+              <div style={{ display: 'flex', gap: 2, height: 5, alignItems: 'center' }}>
+                {ids.slice(0, 4).map((id, j) => (
+                  <span key={j} style={{ width: 5, height: 5, borderRadius: '50%', background: colorOf[id], display: 'inline-block' }} />
+                ))}
+                {ids.length > 4 && <span style={{ fontSize: 8, color: '#A08B7A' }}>+{ids.length - 4}</span>}
+              </div>
+            </div>
+          );
+        })}
       </div>
+      {habits.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 12px', marginTop: 10 }}>
+          {habits.map(h => (
+            <span key={h.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#8A6B58' }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: colorOf[h.id], display: 'inline-block' }} />
+              {h.title}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -893,7 +1006,7 @@ function Modal({ open, onClose, title, children }) {
   return (
     <div style={S.modalBg} onClick={e => e.target === e.currentTarget && onClose()}>
       <div style={S.modal}>
-        <div style={{ width: 40, height: 4, background: '#E8E4DF', borderRadius: 2, margin: '0 auto 24px' }} />
+        <div style={{ width: 40, height: 4, background: '#EADFCF', borderRadius: 2, margin: '0 auto 24px' }} />
         <div style={{ ...S.h2, marginBottom: 20 }}>{title}</div>
         {children}
       </div>
@@ -1093,7 +1206,7 @@ suggested_frequency 為 weekly 時，suggested_times 為每週建議次數（1-7
   return (
     <div style={S.modalBg} onClick={e => e.target === e.currentTarget && onClose()}>
       <div style={{ ...S.modal, maxHeight: '90vh' }}>
-        <div style={{ width: 40, height: 4, background: '#E8E4DF', borderRadius: 2, margin: '0 auto 24px' }} />
+        <div style={{ width: 40, height: 4, background: '#EADFCF', borderRadius: 2, margin: '0 auto 24px' }} />
 
         {/* Step 0: Choose mode */}
         {step === 0 && (
@@ -1101,20 +1214,20 @@ suggested_frequency 為 weekly 時，suggested_times 為每週建議次數（1-7
             <div style={{ ...S.h2, marginBottom: 20 }}>新增習慣</div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <button
-                style={{ ...S.card, cursor: 'pointer', border: '1.5px solid #2D6A4F', textAlign: 'center', padding: 20 }}
+                className="cozy-card" style={{ ...S.card, cursor: 'pointer', border: '1.5px solid #5AA37F', textAlign: 'center', padding: 20 }}
                 onClick={() => { setMode('existing'); setStep(1); }}
               >
                 <div style={{ fontSize: 24, marginBottom: 8 }}>🎯</div>
                 <div style={{ fontWeight: 500, fontSize: 14 }}>加到現有目標</div>
-                <div style={{ fontSize: 12, color: '#8A857F', marginTop: 4 }}>AI 針對你的目標建議習慣</div>
+                <div style={{ fontSize: 12, color: '#A08B7A', marginTop: 4 }}>AI 針對你的目標建議習慣</div>
               </button>
               <button
-                style={{ ...S.card, cursor: 'pointer', border: '1.5px solid #E76F51', textAlign: 'center', padding: 20 }}
+                className="cozy-card" style={{ ...S.card, cursor: 'pointer', border: '1.5px solid #D98368', textAlign: 'center', padding: 20 }}
                 onClick={() => { setMode('new'); setStep(1); }}
               >
                 <div style={{ fontSize: 24, marginBottom: 8 }}>✨</div>
                 <div style={{ fontWeight: 500, fontSize: 14 }}>建立新目標</div>
-                <div style={{ fontSize: 12, color: '#8A857F', marginTop: 4 }}>設定新目標並生成習慣</div>
+                <div style={{ fontSize: 12, color: '#A08B7A', marginTop: 4 }}>設定新目標並生成習慣</div>
               </button>
             </div>
           </>
@@ -1128,16 +1241,16 @@ suggested_frequency 為 weekly 時，suggested_times 為每週建議次數（1-7
               <p style={S.muted}>還沒有設定目標，請選「建立新目標」</p>
             ) : userGoals.map(g => (
               <div key={g.text}
-                style={{ ...S.card, cursor: 'pointer', marginBottom: 10 }}
+                className="cozy-card" style={{ ...S.card, cursor: 'pointer', marginBottom: 10 }}
                 onClick={() => handleGoalChosen(g)}
               >
                 <div style={{ ...S.row }}>
                   <span style={{ fontSize: 20 }}>{GOAL_CATEGORIES.find(c => c.label === g.category)?.emoji || '🎯'}</span>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontWeight: 500 }}>{g.text}</div>
-                    {g.category && <div style={{ fontSize: 12, color: '#8A857F' }}>{g.category}</div>}
+                    {g.category && <div style={{ fontSize: 12, color: '#A08B7A' }}>{g.category}</div>}
                   </div>
-                  <span style={{ color: '#8A857F' }}>→</span>
+                  <span style={{ color: '#A08B7A' }}>→</span>
                 </div>
               </div>
             ))}
@@ -1187,12 +1300,12 @@ suggested_frequency 為 weekly 時，suggested_times 為每週建議次數（1-7
           <>
             <div style={{ ...S.h2, marginBottom: 8 }}>目標審視</div>
             <p style={{ ...S.muted, fontSize: 13, marginBottom: 16 }}>確認你的目標具體可執行</p>
-            <div style={S.card}>
+            <div className="cozy-card" style={S.card}>
               <div style={{ fontWeight: 500, fontSize: 15, marginBottom: 12 }}>
                 {GOAL_CATEGORIES.find(c => c.label === newGoal.category)?.emoji || '🎯'} {newGoal.text}
               </div>
               {newGoalReview.rewrite && (
-                <div style={{ background: '#FDF3E3', border: '1px solid #F0D9B5', borderRadius: 10, padding: '10px 14px', marginBottom: 12, fontSize: 13, color: '#B5935A' }}>
+                <div style={{ background: '#FBF3D8', border: '1px solid #EBD9B2', borderRadius: 10, padding: '10px 14px', marginBottom: 12, fontSize: 13, color: '#C89043' }}>
                   💡 建議改寫：「{newGoalReview.rewrite}」
                 </div>
               )}
@@ -1203,8 +1316,8 @@ suggested_frequency 為 weekly 時，suggested_times 為每週建議次數（1-7
                 <div key={label} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 10 }}>
                   <span style={{ fontSize: 16, flexShrink: 0 }}>{value ? '✅' : '❌'}</span>
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 12, fontWeight: 500, color: '#8A857F', marginBottom: 3 }}>{label}</div>
-                    <div style={{ fontSize: 13, color: value ? '#1A1714' : '#8A857F' }}>
+                    <div style={{ fontSize: 12, fontWeight: 500, color: '#A08B7A', marginBottom: 3 }}>{label}</div>
+                    <div style={{ fontSize: 13, color: value ? '#4A3B31' : '#A08B7A' }}>
                       {value || '未偵測到，可在確認後補充'}
                     </div>
                   </div>
@@ -1213,7 +1326,7 @@ suggested_frequency 為 weekly 時，suggested_times 為每週建議次數（1-7
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 14 }}>
                 <span style={{ fontSize: 16, flexShrink: 0 }}>{newGoalReview.measurable ? '✅' : '❌'}</span>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 12, fontWeight: 500, color: '#8A857F', marginBottom: 3 }}>M 可衡量 *</div>
+                  <div style={{ fontSize: 12, fontWeight: 500, color: '#A08B7A', marginBottom: 3 }}>M 可衡量 *</div>
                   {newGoalReview.measurable ? (
                     <input style={{ ...S.input, fontSize: 13 }} value={newGoalMeasurable}
                       onChange={e => setNewGoalMeasurable(e.target.value)} />
@@ -1248,7 +1361,7 @@ suggested_frequency 為 weekly 時，suggested_times 為每週建議次數（1-7
             <div style={{ ...S.h2, marginBottom: 8 }}>習慣建議</div>
             <p style={{ ...S.muted, fontSize: 13, marginBottom: 16 }}>選擇你想開始的習慣，並設定頻率</p>
             {loading ? (
-              <div style={{ textAlign: 'center', padding: 48, color: '#8A857F' }}>
+              <div style={{ textAlign: 'center', padding: 48, color: '#A08B7A' }}>
                 <div style={{ fontSize: 32, marginBottom: 12 }}>✦</div>
                 <p>AI 正在生成建議…</p>
               </div>
@@ -1259,18 +1372,18 @@ suggested_frequency 為 weekly 時，suggested_times 為每週建議次數（1-7
                   const freq = freqMap[idx] || { type: 'daily' };
                   return (
                     <div key={idx}
-                      style={{ ...S.card, cursor: 'pointer', border: `1.5px solid ${isSel ? '#2D6A4F' : '#E8E4DF'}`, background: isSel ? '#D8F3DC' : '#fff', marginBottom: 10 }}
+                      className="cozy-card" style={{ ...S.card, cursor: 'pointer', border: `1.5px solid ${isSel ? '#5AA37F' : '#EADFCF'}`, background: isSel ? '#E6F2EB' : '#FFFDF9', marginBottom: 10 }}
                       onClick={() => setSelected(s => { const n = new Set(s); n.has(idx) ? n.delete(idx) : n.add(idx); return n; })}>
                       <div style={{ ...S.row, marginBottom: 6 }}>
                         <span style={{ background: diffBg(h.difficulty), color: diffColor(h.difficulty), padding: '3px 10px', borderRadius: 100, fontSize: 11, fontWeight: 500 }}>{diffLabel(h.difficulty)}</span>
                         <div style={{ flex: 1 }} />
-                        {isSel && <span style={{ color: '#2D6A4F', fontWeight: 700 }}>✓</span>}
+                        {isSel && <span style={{ color: '#5AA37F', fontWeight: 700 }}>✓</span>}
                       </div>
                       <div style={{ fontWeight: 600, marginBottom: 4 }}>{h.title}</div>
-                      <div style={{ fontSize: 13, color: '#444', lineHeight: 1.6, marginBottom: 8 }}>{h.description}</div>
-                      {h.why && <div style={{ fontSize: 12, color: '#2D6A4F', background: '#D8F3DC', padding: '4px 10px', borderRadius: 8, display: 'inline-block', marginBottom: 10 }}>💡 {h.why}</div>}
+                      <div style={{ fontSize: 13, color: '#6B5A4C', lineHeight: 1.6, marginBottom: 8 }}>{h.description}</div>
+                      {h.why && <div style={{ fontSize: 12, color: '#5AA37F', background: '#E6F2EB', padding: '4px 10px', borderRadius: 8, display: 'inline-block', marginBottom: 10 }}>💡 {h.why}</div>}
                       {/* Cue + Reward */}
-                      <div onClick={e => e.stopPropagation()} style={{ marginTop: 8, borderTop: '1px solid #E8E4DF', paddingTop: 10 }}>
+                      <div onClick={e => e.stopPropagation()} style={{ marginTop: 8, borderTop: '1px solid #EADFCF', paddingTop: 10 }}>
                         <div style={{ marginBottom: 10 }}>
                           <label style={S.label}>觸發提示（習慣堆疊）</label>
                           <input
@@ -1334,34 +1447,34 @@ function ChainBrokenModal({ broken, onDismiss }) {
   };
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: '#1A1714', zIndex: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+    <div style={{ position: 'fixed', inset: 0, background: '#4A3B31', zIndex: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
       <div style={{ maxWidth: 400, width: '100%', textAlign: 'center' }}>
         <div style={{ fontSize: 64, marginBottom: 24 }}>😢</div>
-        <div style={{ fontFamily: "'Georgia', serif", fontSize: '2rem', color: '#fff', marginBottom: 20 }}>哭哭</div>
-        <div style={{ color: '#8A857F', fontSize: 14, marginBottom: 6 }}>「{item.habitTitle}」</div>
-        <div style={{ color: '#fff', fontSize: 16, marginBottom: 28 }}>習慣中斷啦</div>
+        <div style={{ fontFamily: "'Zen Maru Gothic', 'DM Sans', sans-serif", fontSize: '2rem', color: '#FFFDF9', marginBottom: 20 }}>哭哭</div>
+        <div style={{ color: '#A08B7A', fontSize: 14, marginBottom: 6 }}>「{item.habitTitle}」</div>
+        <div style={{ color: '#FFFDF9', fontSize: 16, marginBottom: 28 }}>習慣中斷啦</div>
         <div style={{ background: 'rgba(255,255,255,0.07)', borderRadius: 16, padding: '20px 24px', marginBottom: 24 }}>
-          <div style={{ color: '#8A857F', fontSize: 13, marginBottom: 6 }}>你曾連續堅持了</div>
-          <div style={{ fontFamily: "'Georgia', serif", fontSize: '3rem', color: '#fff' }}>
+          <div style={{ color: '#A08B7A', fontSize: 13, marginBottom: 6 }}>你曾連續堅持了</div>
+          <div style={{ fontFamily: "'Zen Maru Gothic', 'DM Sans', sans-serif", fontSize: '3rem', color: '#FFFDF9' }}>
             {item.peakStreak} 天
           </div>
           {item.lostAmount > 0 && (
-            <div style={{ color: '#E76F51', fontSize: 14, marginTop: 12 }}>
+            <div style={{ color: '#D98368', fontSize: 14, marginTop: 12 }}>
               NT${item.lostAmount} 的累積已歸零
             </div>
           )}
         </div>
-        <div style={{ color: '#8A857F', fontSize: 13, lineHeight: 1.9, marginBottom: 28 }}>
+        <div style={{ color: '#A08B7A', fontSize: 13, lineHeight: 1.9, marginBottom: 28 }}>
           損失不可挽回。<br />但今天可以重新開始。
         </div>
         <button
-          style={{ display: 'block', width: '100%', padding: '14px 24px', borderRadius: 100, border: 'none', background: '#E76F51', color: '#fff', fontSize: 15, fontWeight: 500, cursor: 'pointer', fontFamily: 'inherit' }}
+          style={{ display: 'block', width: '100%', padding: '14px 24px', borderRadius: 100, border: 'none', background: '#D98368', color: '#FFFDF9', fontSize: 15, fontWeight: 500, cursor: 'pointer', fontFamily: 'inherit' }}
           onClick={next}
         >
           我知道了，重新開始
         </button>
         {broken.length > 1 && (
-          <div style={{ color: '#8A857F', fontSize: 12, marginTop: 14 }}>
+          <div style={{ color: '#A08B7A', fontSize: 12, marginTop: 14 }}>
             {idx + 1} / {broken.length}
           </div>
         )}
@@ -1383,6 +1496,7 @@ function MainApp({ user, toast, onSignOut }) {
   const [showCapWarning, setShowCapWarning] = useState(false);
   const [chainBroken, setChainBroken] = useState([]); // [{habitTitle, peakStreak, lostAmount}]
   const chainChecked = useRef(false);
+  const celebRef = useRef(null); // check-in celebration canvas
   const [confirmChainHabit, setConfirmChainHabit] = useState(null); // habitId | null
 
   const parseDesc = (raw) => {
@@ -1492,10 +1606,14 @@ function MainApp({ user, toast, onSignOut }) {
     return { earned, used, balance: earned - used };
   };
 
-  const toggleCheckin = async (hId, done) => {
+  const toggleCheckin = async (hId, done, origin) => {
     try {
       if (done) await supa.del('checkins', `habit_id=eq.${hId}&checked_date=eq.${todayStr()}`);
-      else { await supa.post('checkins', { habit_id: hId, user_id: user.id, checked_date: todayStr() }); toast('打卡成功！繼續保持 🌟'); }
+      else {
+        await supa.post('checkins', { habit_id: hId, user_id: user.id, checked_date: todayStr() });
+        if (origin) celebRef.current?.fire(origin.x, origin.y); // 🎉 hand-drawn particle burst
+        toast('打卡成功！繼續保持 🌟');
+      }
       await load();
     } catch { toast('操作失敗'); }
   };
@@ -1561,26 +1679,26 @@ function MainApp({ user, toast, onSignOut }) {
     <div>
       <div style={{ padding: '12px 0 24px' }}>
         <p style={{ ...S.muted, fontSize: 13 }}>{now.toLocaleDateString('zh-TW', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' })}</p>
-        <div style={{ ...S.display, marginTop: 4, fontSize: '1.75rem' }}>{greet}，<em style={{ color: '#2D6A4F', fontStyle: 'italic' }}>{user.name}</em> 👋</div>
+        <div style={{ ...S.display, marginTop: 4, fontSize: '1.75rem' }}>{greet}，<em style={{ color: '#5AA37F', fontStyle: 'italic' }}>{user.name}</em> 👋</div>
       </div>
 
       {habits.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: '48px 24px', color: '#8A857F' }}>
+        <div style={{ textAlign: 'center', padding: '48px 24px', color: '#A08B7A' }}>
           <div style={{ fontSize: 40, marginBottom: 12 }}>🌱</div>
           <p>去「習慣」頁面新增你的第一個習慣吧！</p>
         </div>
       ) : (<>
-        <div style={S.card}>
+        <div className="cozy-card" style={S.card}>
           <div style={{ ...S.row, marginBottom: 14 }}>
             <div>
-              <div style={{ fontSize: 12, color: '#8A857F', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em' }}>今日完成</div>
+              <div style={{ fontSize: 12, color: '#A08B7A', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em' }}>今日完成</div>
               <div style={{ fontSize: 17, fontWeight: 500, marginTop: 2 }}>{doneCount} / {habits.length} 個習慣</div>
             </div>
             <div style={{ flex: 1 }} />
             <div style={{ fontSize: 28 }}>{doneCount === habits.length ? '🎉' : '💪'}</div>
           </div>
-          <div style={{ background: '#E8E4DF', borderRadius: 100, height: 5, overflow: 'hidden' }}>
-            <div style={{ background: '#2D6A4F', height: 5, borderRadius: 100, width: `${habits.length ? (doneCount / habits.length * 100) : 0}%`, transition: 'width .5s ease' }} />
+          <div style={{ background: '#EADFCF', borderRadius: 100, height: 5, overflow: 'hidden' }}>
+            <div style={{ background: '#5AA37F', height: 5, borderRadius: 100, width: `${habits.length ? (doneCount / habits.length * 100) : 0}%`, transition: 'width .5s ease' }} />
           </div>
         </div>
 
@@ -1592,10 +1710,10 @@ function MainApp({ user, toast, onSignOut }) {
             >
               <span style={{ fontSize: 16 }}>{goalEmoji(goalLabel)}</span>
               <span style={{ fontWeight: 500, fontSize: 14, flex: 1 }}>{goalLabel}</span>
-              <span style={{ color: '#8A857F', fontSize: 13 }}>{collapsed['today-' + goalLabel] ? '▶' : '▼'}</span>
+              <span style={{ color: '#A08B7A', fontSize: 13 }}>{collapsed['today-' + goalLabel] ? '▶' : '▼'}</span>
             </div>
             {!collapsed['today-' + goalLabel] && (
-              <div style={S.card}>
+              <div className="cozy-card" style={S.card}>
                 {groupHabits.map(h => {
                   const freq = h.frequency || { type: 'daily' };
                   const isWeekly = freq.type === 'weekly';
@@ -1606,35 +1724,48 @@ function MainApp({ user, toast, onSignOut }) {
                     ? getWeeklyStreak(h.id, checkins, freq.times)
                     : getStreak(h.id, checkins);
                   return (
-                    <div key={h.id} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 0', borderBottom: '1px solid #E8E4DF' }}>
+                    <div key={h.id} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 0', borderBottom: '1px solid #EADFCF' }}>
                       <button
-                        onClick={() => {
+                        onClick={(e) => {
                           if (isWeekly && weeklyDone && !todayCheckins.has(h.id)) return; // can't uncheck weekly via today
-                          toggleCheckin(h.id, isWeekly ? todayCheckins.has(h.id) : done);
+                          const r = e.currentTarget.getBoundingClientRect();
+                          toggleCheckin(h.id, isWeekly ? todayCheckins.has(h.id) : done, { x: r.left + r.width / 2, y: r.top + r.height / 2 });
                         }}
                         style={{
-                          width: 40, height: 40, borderRadius: '50%', flexShrink: 0,
-                          border: `2px solid ${done ? '#2D6A4F' : '#E8E4DF'}`,
-                          background: done ? '#2D6A4F' : 'none', cursor: (isWeekly && weeklyDone && !todayCheckins.has(h.id)) ? 'default' : 'pointer',
-                          display: 'flex', alignItems: 'center', justifyContent: 'center', color: done ? '#fff' : 'transparent', fontSize: 16
+                          width: 46, height: 46, borderRadius: '50% 48% 52% 47%', flexShrink: 0,
+                          border: `2.5px solid ${done ? C.leaf : C.mint}`,
+                          background: done ? C.leaf : C.paper, cursor: (isWeekly && weeklyDone && !todayCheckins.has(h.id)) ? 'default' : 'pointer',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center', color: done ? '#FFFDF9' : 'transparent', fontSize: 20, fontWeight: 700,
+                          boxShadow: done ? `2px 2px 0 #CDE7D8` : `2px 2px 0 #EDE3D4`,
                         }}>✓</button>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontWeight: 500, opacity: done ? 0.4 : 1, textDecoration: done ? 'line-through' : 'none' }}>{h.title}</div>
                         {isWeekly ? (
                           <div style={{ marginTop: 6 }}>
-                            <div style={{ fontSize: 12, color: '#8A857F', marginBottom: 4 }}>
+                            <div style={{ fontSize: 12, color: '#A08B7A', marginBottom: 4 }}>
                               NT${h.fund_per_day}/次 · {weeklyCount} / {freq.times} 次（本週）
                             </div>
-                            <div style={{ background: '#E8E4DF', borderRadius: 100, height: 4, overflow: 'hidden', maxWidth: 120 }}>
-                              <div style={{ background: '#2D6A4F', height: 4, borderRadius: 100, width: `${Math.min(100, weeklyCount / freq.times * 100)}%`, transition: 'width .4s ease' }} />
+                            <div style={{ background: '#EADFCF', borderRadius: 100, height: 4, overflow: 'hidden', maxWidth: 120 }}>
+                              <div style={{ background: '#5AA37F', height: 4, borderRadius: 100, width: `${Math.min(100, weeklyCount / freq.times * 100)}%`, transition: 'width .4s ease' }} />
                             </div>
+                            {(() => {
+                              const ws = getWeeklyStatus(h, checkins, 0);
+                              const dotColor = ws === 'green' ? '#5AA37F' : ws === 'yellow' ? '#E8C94F' : '#D98368';
+                              return (
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 5 }}>
+                                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: dotColor, display: 'inline-block', flexShrink: 0 }} />
+                                  <span style={{ fontSize: 11, color: dotColor, fontWeight: 500 }}>{weeklyCount}/{freq.times}</span>
+                                  {ws === 'green' && <span style={{ fontSize: 11 }}>🌸</span>}
+                                </div>
+                              );
+                            })()}
                           </div>
                         ) : (
-                          <div style={{ fontSize: 12, color: '#8A857F', marginTop: 2 }}>NT${h.fund_per_day}/天 · {diffLabel(h.difficulty)}</div>
+                          <div style={{ fontSize: 12, color: '#A08B7A', marginTop: 2 }}>NT${h.fund_per_day}/天 · {diffLabel(h.difficulty)}</div>
                         )}
                       </div>
                       {streak > 0 && (
-                        <div style={{ background: '#FDF3E3', color: '#B5935A', padding: '4px 10px', borderRadius: 100, fontSize: 12, fontWeight: 500, whiteSpace: 'nowrap' }}>
+                        <div style={{ background: '#FBF3D8', color: '#C89043', padding: '4px 10px', borderRadius: 100, fontSize: 12, fontWeight: 500, whiteSpace: 'nowrap' }}>
                           🔥 {streak}{isWeekly ? '週' : '天'}
                         </div>
                       )}
@@ -1646,10 +1777,10 @@ function MainApp({ user, toast, onSignOut }) {
           </div>
         ))}
 
-        <div style={{ ...S.card, display: 'flex', alignItems: 'center' }}>
+        <div className="cozy-card" style={{ ...S.card, display: 'flex', alignItems: 'center' }}>
           <div>
-            <div style={{ fontSize: 12, color: '#8A857F', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em' }}>今日可累積</div>
-            <div style={{ fontFamily: "'Georgia',serif", fontSize: '2rem', color: '#B5935A', marginTop: 2 }}>NT${habits.filter(h => todayCheckins.has(h.id)).reduce((s, h) => s + h.fund_per_day, 0)}</div>
+            <div style={{ fontSize: 12, color: '#A08B7A', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em' }}>今日可累積</div>
+            <div style={{ fontFamily: "'Zen Maru Gothic', 'DM Sans', sans-serif", fontSize: '2rem', color: '#C89043', marginTop: 2 }}>NT${habits.filter(h => todayCheckins.has(h.id)).reduce((s, h) => s + h.fund_per_day, 0)}</div>
           </div>
           <div style={{ flex: 1 }} />
           <div style={{ fontSize: 32 }}>🌱</div>
@@ -1670,7 +1801,7 @@ function MainApp({ user, toast, onSignOut }) {
         }}>+ 新增</button>
       </div>
       {habits.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: '48px 24px', color: '#8A857F' }}>
+        <div style={{ textAlign: 'center', padding: '48px 24px', color: '#A08B7A' }}>
           <div style={{ fontSize: 40, marginBottom: 12 }}>✨</div><p>點擊右上角新增你的第一個習慣</p>
         </div>
       ) : Object.entries(groupByGoal(habits)).map(([goalLabel, groupHabits]) => (
@@ -1681,7 +1812,7 @@ function MainApp({ user, toast, onSignOut }) {
           >
             <span style={{ fontSize: 16 }}>{goalEmoji(goalLabel)}</span>
             <span style={{ fontWeight: 500, fontSize: 14, flex: 1 }}>{goalLabel}</span>
-            <span style={{ color: '#8A857F', fontSize: 13 }}>{collapsed['habits-' + goalLabel] ? '▶' : '▼'}</span>
+            <span style={{ color: '#A08B7A', fontSize: 13 }}>{collapsed['habits-' + goalLabel] ? '▶' : '▼'}</span>
           </div>
           {!collapsed['habits-' + goalLabel] && groupHabits.map(h => {
             const freq = h.frequency || { type: 'daily' };
@@ -1698,22 +1829,22 @@ function MainApp({ user, toast, onSignOut }) {
             const total = lifetimeTotal; // keep for 📅 累計 display (lifetime)
             const userGoals = (user.values_answers?.goals || []).filter(g => g.text?.trim());
             return (
-              <div key={h.id} style={S.card}>
+              <div key={h.id} className="cozy-card" style={S.card}>
                 <div style={{ ...S.row, marginBottom: 10 }}>
                   <span style={{ background: diffBg(h.difficulty), color: diffColor(h.difficulty), padding: '3px 12px', borderRadius: 100, fontSize: 12, fontWeight: 500 }}>{diffLabel(h.difficulty)}</span>
                   <span style={{ ...S.muted, fontSize: 12, flex: 1, textAlign: 'right' }}>
                     {isWeekly ? `NT$${h.fund_per_day}/次 · 每週${freq.times}次` : `NT$${h.fund_per_day}/天`}
                   </span>
-                  <button onClick={() => deleteHabit(h.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#8A857F', fontSize: 20, lineHeight: 1 }}>×</button>
+                  <button onClick={() => deleteHabit(h.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#A08B7A', fontSize: 20, lineHeight: 1 }}>×</button>
                 </div>
                 <div style={{ fontWeight: 500, fontSize: 15 }}>{h.title}</div>
                 {(() => {
                   const { desc, cue, reward } = parseDesc(h.description);
                   return (
                     <>
-                      {desc && <div style={{ fontSize: 13, color: '#8A857F', marginTop: 4 }}>{desc}</div>}
-                      {cue && <div style={{ fontSize: 12, color: '#2D6A4F', marginTop: 4 }}>⚡ 觸發：{cue}</div>}
-                      {reward && <div style={{ fontSize: 12, color: '#B5935A', marginTop: 2 }}>🎁 完成後：{reward}</div>}
+                      {desc && <div style={{ fontSize: 13, color: '#A08B7A', marginTop: 4 }}>{desc}</div>}
+                      {cue && <div style={{ fontSize: 12, color: '#5AA37F', marginTop: 4 }}>⚡ 觸發：{cue}</div>}
+                      {reward && <div style={{ fontSize: 12, color: '#C89043', marginTop: 2 }}>🎁 完成後：{reward}</div>}
                     </>
                   );
                 })()}
@@ -1723,17 +1854,17 @@ function MainApp({ user, toast, onSignOut }) {
                   <span style={{ ...S.muted, fontSize: 12 }}>💰 NT${chainFundCheckins.length * h.fund_per_day}</span>
                 </div>
                 {(!h.frequency || h.frequency?.type === 'daily') && (
-                  <div style={{ marginTop: 10, borderTop: '1px solid #E8E4DF', paddingTop: 10 }}>
+                  <div style={{ marginTop: 10, borderTop: '1px solid #EADFCF', paddingTop: 10 }}>
                     {h.chain_mode ? (
                       <button
-                        style={{ background: 'none', border: '1px solid #E8E4DF', borderRadius: 100, padding: '5px 14px', fontSize: 12, color: '#8A857F', cursor: 'pointer', fontFamily: 'inherit' }}
+                        style={{ background: 'none', border: '1px solid #EADFCF', borderRadius: 100, padding: '5px 14px', fontSize: 12, color: '#A08B7A', cursor: 'pointer', fontFamily: 'inherit' }}
                         onClick={() => disableChainMode(h.id)}
                       >
                         ⛓️ 不斷鏈中（點擊停用）
                       </button>
                     ) : (
                       <button
-                        style={{ background: 'none', border: '1px solid #E8E4DF', borderRadius: 100, padding: '5px 14px', fontSize: 12, color: '#8A857F', cursor: 'pointer', fontFamily: 'inherit' }}
+                        style={{ background: 'none', border: '1px solid #EADFCF', borderRadius: 100, padding: '5px 14px', fontSize: 12, color: '#A08B7A', cursor: 'pointer', fontFamily: 'inherit' }}
                         onClick={() => setConfirmChainHabit(h.id)}
                       >
                         🔗 開啟不斷鏈
@@ -1770,29 +1901,125 @@ function MainApp({ user, toast, onSignOut }) {
     return (
       <div>
         <div style={{ padding: '12px 0 24px' }}><div style={S.h2}>愛的基金</div><p style={S.muted}>你的習慣，轉化為對世界的好</p></div>
-        <div style={{ ...S.card, textAlign: 'center', padding: 36 }}>
-          <div style={{ fontSize: 12, color: '#8A857F', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em' }}>基金餘額</div>
-          <div style={{ fontFamily: "'Georgia',serif", fontSize: '3rem', color: '#B5935A', margin: '10px 0 6px' }}>NT${balance}</div>
+        <div className="cozy-card" style={{ ...S.card, textAlign: 'center', padding: 36 }}>
+          <div style={{ fontSize: 12, color: '#A08B7A', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em' }}>基金餘額</div>
+          <div style={{ fontFamily: "'Zen Maru Gothic', 'DM Sans', sans-serif", fontSize: '3rem', color: '#C89043', margin: '10px 0 6px' }}>NT${balance}</div>
           <p style={{ ...S.muted, fontSize: 13 }}>每一分都來自你的堅持</p>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 14 }}>
           <button style={{ ...S.btn('primary'), width: '100%', justifyContent: 'center' }} onClick={() => { setForm({}); setModal('donate'); }}>🌍 捐給慈善</button>
           <button style={{ ...S.btn('warm'), width: '100%', justifyContent: 'center' }} onClick={() => { setForm({}); setModal('gift'); }}>🎁 買小禮物</button>
         </div>
-        <div style={{ ...S.card, marginTop: 14 }}>
+        <div className="cozy-card" style={{ ...S.card, marginTop: 14 }}>
           <div style={{ fontWeight: 500, marginBottom: 16 }}>使用紀錄</div>
           {fundUses.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '24px 0', color: '#8A857F' }}><div style={{ fontSize: 28, marginBottom: 8 }}>✨</div><p>還沒有任何紀錄</p></div>
+            <div style={{ textAlign: 'center', padding: '24px 0', color: '#A08B7A' }}><div style={{ fontSize: 28, marginBottom: 8 }}>✨</div><p>還沒有任何紀錄</p></div>
           ) : fundUses.map(u => (
-            <div key={u.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 0', borderBottom: '1px solid #E8E4DF' }}>
+            <div key={u.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 0', borderBottom: '1px solid #EADFCF' }}>
               <div>
                 <div style={{ fontSize: 14, fontWeight: 500 }}>{u.type === 'charity' ? '🌍 ' : '🎁 '}{u.description}</div>
-                <div style={{ fontSize: 12, color: '#8A857F' }}>{new Date(u.created_at).toLocaleDateString('zh-TW')}</div>
+                <div style={{ fontSize: 12, color: '#A08B7A' }}>{new Date(u.created_at).toLocaleDateString('zh-TW')}</div>
               </div>
-              <div style={{ fontWeight: 500, color: '#E76F51' }}>-NT${u.amount}</div>
+              <div style={{ fontWeight: 500, color: '#D98368' }}>-NT${u.amount}</div>
             </div>
           ))}
         </div>
+      </div>
+    );
+  };
+
+  // ── 提醒卡：Web Push 訂閱 ───────────────────────────────
+  const ReminderCard = () => {
+    const supported = typeof window !== 'undefined'
+      && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+    // VAPID public key is not a secret; hardcoded fallback so cloud builds (no .env.local) still work
+    const vapidKey = import.meta.env.VITE_VAPID_PUBLIC_KEY
+      || 'BKW7jALJCHxiAHg2PNjvbvgLqe_Zf8WOlWX6RIR2uN943UBOsBT65fMolN1gSww0EhvUcmp2cqG9W_CDEYyKTB0';
+    const [state, setState] = useState('loading'); // loading | off | on | denied | busy
+    const [endpoint, setEndpoint] = useState(null);
+
+    useEffect(() => {
+      let alive = true;
+      if (!supported) { setState('unsupported'); return; }
+      if (Notification.permission === 'denied') { setState('denied'); return; }
+      navigator.serviceWorker.ready
+        .then(reg => reg.pushManager.getSubscription())
+        .then(sub => {
+          if (!alive) return;
+          if (sub) { setEndpoint(sub.endpoint); setState('on'); }
+          else setState('off');
+        })
+        .catch(() => alive && setState('off'));
+      return () => { alive = false; };
+    }, []);
+
+    const enable = async () => {
+      if (!vapidKey) { toast('⚠️ 尚未設定推播金鑰'); return; }
+      setState('busy');
+      try {
+        const perm = await Notification.requestPermission();
+        if (perm !== 'granted') { setState(perm === 'denied' ? 'denied' : 'off'); return; }
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(vapidKey),
+        });
+        const json = sub.toJSON();
+        await supa.req('push_subscriptions', {
+          method: 'POST',
+          prefer: 'resolution=merge-duplicates,return=minimal',
+          body: JSON.stringify({ user_id: user.id, subscription: json, endpoint: json.endpoint }),
+        });
+        setEndpoint(json.endpoint);
+        setState('on');
+        toast('🔔 已開啟每日提醒');
+      } catch (e) {
+        setState('off');
+        toast('⚠️ 開啟失敗，請再試一次');
+      }
+    };
+
+    const disable = async () => {
+      setState('busy');
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        const ep = sub?.endpoint || endpoint;
+        if (sub) await sub.unsubscribe();
+        if (ep) await supa.del('push_subscriptions', `endpoint=eq.${encodeURIComponent(ep)}`);
+        setEndpoint(null);
+        setState('off');
+        toast('已關閉提醒');
+      } catch (e) {
+        setState('on');
+        toast('⚠️ 關閉失敗，請再試一次');
+      }
+    };
+
+    if (!supported) return null;
+
+    return (
+      <div className="cozy-card" style={{ ...S.card, marginTop: 14 }}>
+        <div style={{ fontWeight: 500, marginBottom: 6, fontSize: 15 }}>🔔 每日提醒</div>
+        <p style={{ ...S.muted, fontSize: 13, lineHeight: 1.7, marginBottom: 14 }}>
+          每晚 21:30，如果今天還沒打卡，輕輕提醒你一下。
+        </p>
+        {state === 'on' ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 13, color: '#5AA37F', fontWeight: 500 }}>✓ 已開啟</span>
+            <div style={{ flex: 1 }} />
+            <button onClick={disable} style={{ background: 'none', border: '1px solid #EADFCF', borderRadius: 100, padding: '7px 16px', fontSize: 12, color: '#A08B7A', cursor: 'pointer', fontFamily: 'inherit' }}>關閉</button>
+          </div>
+        ) : state === 'denied' ? (
+          <p style={{ fontSize: 12, color: '#D98368', lineHeight: 1.7, margin: 0 }}>
+            通知權限已被封鎖。請到瀏覽器設定重新允許本站通知，再回來開啟。
+          </p>
+        ) : (
+          <button onClick={enable} disabled={state === 'busy' || state === 'loading'}
+            style={{ ...S.btn('primary'), width: '100%', justifyContent: 'center', opacity: (state === 'busy' || state === 'loading') ? 0.6 : 1 }}>
+            {state === 'busy' ? '開啟中…' : '開啟每日提醒'}
+          </button>
+        )}
       </div>
     );
   };
@@ -1808,7 +2035,7 @@ function MainApp({ user, toast, onSignOut }) {
         <div style={{ ...S.row, padding: '12px 0 24px' }}>
         <div><div style={S.h2}>成長總覽</div><p style={S.muted}>你一直都在往前走</p></div>
         <div style={{ flex: 1 }} />
-        <button onClick={onSignOut} style={{ background: 'none', border: '1px solid #E8E4DF', borderRadius: 100, padding: '7px 16px', fontSize: 12, color: '#8A857F', cursor: 'pointer', fontFamily: 'inherit' }}>登出</button>
+        <button onClick={onSignOut} style={{ background: 'none', border: '1px solid #EADFCF', borderRadius: 100, padding: '7px 16px', fontSize: 12, color: '#A08B7A', cursor: 'pointer', fontFamily: 'inherit' }}>登出</button>
       </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
           {[
@@ -1817,34 +2044,72 @@ function MainApp({ user, toast, onSignOut }) {
             { label: '進行中習慣', val: habits.length, unit: '個' },
             { label: '基金餘額', val: `NT$${balance}`, unit: '' },
           ].map(s => (
-            <div key={s.label} style={{ ...S.card, textAlign: 'center' }}>
-              <div style={{ fontSize: 12, color: '#8A857F', fontWeight: 500, marginBottom: 8 }}>{s.label}</div>
-              <div style={{ fontFamily: "'Georgia',serif", fontSize: '2rem', color: '#B5935A' }}>{s.val}</div>
+            <div key={s.label} className="cozy-card" style={{ ...S.card, textAlign: 'center' }}>
+              <div style={{ fontSize: 12, color: '#A08B7A', fontWeight: 500, marginBottom: 8 }}>{s.label}</div>
+              <div style={{ fontFamily: "'Zen Maru Gothic', 'DM Sans', sans-serif", fontSize: '2rem', color: '#C89043' }}>{s.val}</div>
               {s.unit && <div style={{ ...S.muted, fontSize: 12 }}>{s.unit}</div>}
             </div>
           ))}
         </div>
-        {habits.map(h => {
-          const hCheckins = new Set(checkins.filter(c => c.habit_id === h.id).map(c => c.checked_date));
+        <ReminderCard />
+        {/* ── 週節奏卡片 ── */}
+        {(() => {
+          const weeklyHabits = habits.filter(h => h.frequency?.type === 'weekly');
+          const dotColor = s => s === 'green' ? '#5AA37F' : s === 'yellow' ? '#E8C94F' : s === 'red' ? '#D98368' : null;
           return (
-            <div key={h.id} style={{ ...S.card, marginTop: 14 }}>
-              <div style={{ ...S.row, marginBottom: 12 }}>
-                <strong>{h.title}</strong>
-                <span style={{ ...S.muted, fontSize: 12, marginLeft: 'auto' }}>累計 {hCheckins.size} 天</span>
-              </div>
-              <MiniCalendar checkedDates={hCheckins} />
+            <div className="cozy-card" style={{ ...S.card, marginTop: 14 }}>
+              <div style={{ fontWeight: 500, marginBottom: 14, fontSize: 15 }}>🌸 週節奏</div>
+              {weeklyHabits.length === 0 ? (
+                <div style={{ color: '#A08B7A', fontSize: 13, textAlign: 'center', padding: '8px 0' }}>還沒有週習慣，新增一個來追蹤節奏吧 ✨</div>
+              ) : weeklyHabits.map(h => {
+                const lastWeekStatus = getWeeklyStatus(h, checkins, -1);
+                const dots = Array.from({ length: 8 }, (_, i) => {
+                  const offset = i - 7; // i=0 → offset=-7 (7 weeks ago), i=7 → offset=0 (this week)
+                  return { offset, status: getWeeklyStatus(h, checkins, offset) };
+                });
+                return (
+                  <div key={h.id} style={{ marginBottom: 14 }}>
+                    <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 6 }}>{h.title}</div>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      {dots.map(({ offset, status }) => {
+                        const isThisWeek = offset === 0;
+                        const color = dotColor(status);
+                        return color ? (
+                          <span key={offset} style={{
+                            width: isThisWeek ? 13 : 10, height: isThisWeek ? 13 : 10,
+                            borderRadius: '50%', background: color, display: 'inline-block', flexShrink: 0,
+                            boxShadow: isThisWeek ? `0 0 0 2px #FFFDF9, 0 0 0 3.5px ${color}` : 'none',
+                          }} />
+                        ) : (
+                          <span key={offset} style={{
+                            width: isThisWeek ? 13 : 10, height: isThisWeek ? 13 : 10,
+                            borderRadius: '50%', border: '1.5px solid #E0D4C2', display: 'inline-block', flexShrink: 0,
+                          }} />
+                        );
+                      })}
+                    </div>
+                    {lastWeekStatus === 'red' && (
+                      <div style={{ fontSize: 11, color: '#C89043', marginTop: 5 }}>這週是保底週——出席 {Math.max(2, (h.frequency.times || 1) - 1)} 次就贏 🌱</div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           );
-        })}
+        })()}
+        <div className="cozy-card" style={{ ...S.card, marginTop: 14 }}>
+          <div style={{ fontWeight: 500, marginBottom: 14, fontSize: 15 }}>🗓️ 打卡月曆</div>
+          <MonthCalendar habits={habits} checkins={checkins} />
+        </div>
         {v.goals?.filter(g => g.text?.trim()).length > 0 && (
-          <div style={{ ...S.card, marginTop: 14 }}>
+          <div className="cozy-card" style={{ ...S.card, marginTop: 14 }}>
             <div style={{ fontWeight: 500, marginBottom: 14 }}>你的目標</div>
             {v.goals.filter(g => g.text?.trim()).map((g, i) => (
-              <div key={i} style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 12, paddingBottom: 12, borderBottom: i < v.goals.filter(g2 => g2.text?.trim()).length - 1 ? "1px solid #E8E4DF" : "none" }}>
+              <div key={i} style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 12, paddingBottom: 12, borderBottom: i < v.goals.filter(g2 => g2.text?.trim()).length - 1 ? "1px solid #EADFCF" : "none" }}>
                 <div style={{ fontSize: 20, flexShrink: 0 }}>{GOAL_CATEGORIES.find(c => c.label === g.category)?.emoji || "🎯"}</div>
                 <div>
                   <div style={{ fontWeight: 500, fontSize: 14 }}>{g.text}</div>
-                  <div style={{ color: "#8A857F", fontSize: 12, marginTop: 3 }}>{[g.category, g.deadline, g.timePerDay].filter(Boolean).join(" · ")}</div>
+                  <div style={{ color: "#A08B7A", fontSize: 12, marginTop: 3 }}>{[g.category, g.deadline, g.timePerDay].filter(Boolean).join(" · ")}</div>
                 </div>
               </div>
             ))}
@@ -1859,6 +2124,8 @@ function MainApp({ user, toast, onSignOut }) {
   return (
     <div style={S.bg}>
       <div style={S.app}>{tabs[tab]}</div>
+
+      <CheckinCelebration ref={celebRef} />
 
       <ChainBrokenModal broken={chainBroken} onDismiss={() => setChainBroken([])} />
 
@@ -1892,14 +2159,14 @@ function MainApp({ user, toast, onSignOut }) {
       {showCapWarning && (
         <div style={S.modalBg} onClick={e => e.target === e.currentTarget && setShowCapWarning(false)}>
           <div style={S.modal}>
-            <div style={{ width: 40, height: 4, background: '#E8E4DF', borderRadius: 2, margin: '0 auto 24px' }} />
+            <div style={{ width: 40, height: 4, background: '#EADFCF', borderRadius: 2, margin: '0 auto 24px' }} />
             <div style={{ ...S.h2, marginBottom: 8 }}>你已有 {habits.length} 個習慣</div>
             <p style={{ ...S.muted, fontSize: 13, marginBottom: 16, lineHeight: 1.7 }}>
               建立習慣的科學建議：先穩固現有習慣，再加入新的。<br />「一次想改太多」是最常見的失敗原因。
             </p>
-            <div style={{ ...S.card, marginBottom: 16 }}>
+            <div className="cozy-card" style={{ ...S.card, marginBottom: 16 }}>
               {habits.map(h => (
-                <div key={h.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid #E8E4DF' }}>
+                <div key={h.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid #EADFCF' }}>
                   <span style={{ fontSize: 16 }}>{'🟢'}</span>
                   <span style={{ fontSize: 14, flex: 1 }}>{h.title}</span>
                 </div>
@@ -1925,7 +2192,7 @@ function MainApp({ user, toast, onSignOut }) {
 
       {/* Donate Modal */}
       <Modal open={modal === 'donate'} onClose={() => setModal(null)} title="捐給慈善機構">
-        <p style={{ ...S.muted, marginBottom: 20, fontSize: 14 }}>基金餘額：<strong style={{ color: '#1A1714' }}>NT${balance}</strong></p>
+        <p style={{ ...S.muted, marginBottom: 20, fontSize: 14 }}>基金餘額：<strong style={{ color: '#4A3B31' }}>NT${balance}</strong></p>
         {[['org', '慈善機構名稱', '例：台灣世界展望會'], ['amount', '捐款金額 (NT$)', '0']].map(([k, l, p]) => (
           <div key={k} style={{ marginBottom: 18 }}>
             <label style={S.label}>{l}</label>
@@ -1940,7 +2207,7 @@ function MainApp({ user, toast, onSignOut }) {
 
       {/* Gift Modal */}
       <Modal open={modal === 'gift'} onClose={() => setModal(null)} title="買小禮物給在乎的人">
-        <p style={{ ...S.muted, marginBottom: 20, fontSize: 14 }}>基金餘額：<strong style={{ color: '#1A1714' }}>NT${balance}</strong></p>
+        <p style={{ ...S.muted, marginBottom: 20, fontSize: 14 }}>基金餘額：<strong style={{ color: '#4A3B31' }}>NT${balance}</strong></p>
         {[['who', '送給誰', '例：媽媽、好友小美'], ['what', '禮物說明', '例：一束鮮花'], ['amount', '使用金額 (NT$)', '0']].map(([k, l, p]) => (
           <div key={k} style={{ marginBottom: 18 }}>
             <label style={S.label}>{l}</label>
@@ -1996,8 +2263,9 @@ export default function App() {
 
   if (loading) return (
     <div style={{ ...S.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh' }}>
-      <div style={{ textAlign: 'center', color: '#8A857F' }}>
-        <div style={{ fontSize: 32, marginBottom: 12 }}>✦</div>
+      <FluidBackground />
+      <div style={{ textAlign: 'center', color: '#A08B7A' }}>
+        <div style={{ fontSize: 32, marginBottom: 12, animation: 'spin 2s linear infinite', display: 'inline-block' }}>✦</div>
         <p>載入中…</p>
       </div>
     </div>
@@ -2005,10 +2273,12 @@ export default function App() {
 
   return (
     <div>
+      {/* Gallery-minimal warm-gold light-flow background (fixed, z-index bottom) */}
+      <FluidBackground />
       {/* Toast */}
       <div style={{
         position: 'fixed', top: 24, left: '50%', transform: `translateX(-50%) translateY(${show ? 0 : -80}px)`,
-        background: '#1A1714', color: '#fff', padding: '12px 24px', borderRadius: 100,
+        background: '#4A3B31', color: '#FFFDF9', padding: '12px 24px', borderRadius: 100,
         fontSize: 14, zIndex: 999, transition: 'transform .3s ease', whiteSpace: 'nowrap'
       }}>{msg}</div>
 

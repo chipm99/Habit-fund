@@ -4,10 +4,52 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>好習慣基金</title>
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌱</text></svg>" />
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌞</text></svg>" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="theme-color" content="#FDFBF7" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600&family=Zen+Maru+Gothic:wght@400;500;700&display=swap" rel="stylesheet" />
+    <style>
+      html, body { margin: 0; padding: 0; }
+      /* Cozy Morning Sun cream base so the first paint (before the paper canvas mounts) is on-palette */
+      body { background: #FDFBF7; -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+      @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      @keyframes cozyPopIn { 0% { transform: scale(.9); opacity: 0; } 60% { transform: scale(1.03); } 100% { transform: scale(1); opacity: 1; } }
+
+      /* ── Juicy physics: Q-bouncy spring on hover / active (approx tension 180 / friction 12) ── */
+      button, [data-juicy] {
+        transition: transform .32s cubic-bezier(.34, 1.7, .5, 1), box-shadow .32s cubic-bezier(.34, 1.7, .5, 1), background .2s, border-color .2s;
+      }
+      button:not(:disabled):hover, [data-juicy]:hover {
+        transform: translateY(-2px) scale(1.035);
+      }
+      button:not(:disabled):active, [data-juicy]:active {
+        transform: scale(.93);
+      }
+      /* Cards: gentle springy lift; interactive (cursor:pointer) ones read juicier */
+      .cozy-card { transition: transform .32s cubic-bezier(.34, 1.6, .5, 1), box-shadow .32s cubic-bezier(.34, 1.6, .5, 1); }
+      .cozy-card:hover { transform: translateY(-2px) rotate(-.15deg); }
+
+      @media (prefers-reduced-motion: reduce) {
+        * { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; }
+        button:hover, button:active, .cozy-card:hover, [data-juicy]:hover, [data-juicy]:active { transform: none !important; }
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // Register the push service worker (no offline cache by design).
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js').catch(() => {});
+        });
+      }
+    </script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
