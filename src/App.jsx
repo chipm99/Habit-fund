@@ -5,7 +5,9 @@ import CheckinCelebration from './CheckinCelebration.jsx';
 
 const SUPABASE_URL = 'https://keenwhiygrrnxhllibxa.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_ZrftrM1kZGX3odvfJQG0Pw_jNriTgc6';
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+});
 
 // ── Supabase client ──────────────────────────────────────
 const supa = {
@@ -210,8 +212,12 @@ const S = {
 // ── Login ────────────────────────────────────────────────
 function Login({ toast }) {
   const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [mode, setMode] = useState('login'); // 'login' | 'signup'
   const [sent, setSent] = useState(false);
+  const [magicOpen, setMagicOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
 
   const sendLink = async () => {
     if (!email.trim()) { toast('請輸入 Email'); return; }
@@ -223,6 +229,27 @@ function Login({ toast }) {
     setLoading(false);
     if (error) { toast('發送失敗：' + error.message); return; }
     setSent(true);
+  };
+
+  const signIn = async () => {
+    if (!email.trim() || !password) { toast('請輸入 Email 與密碼'); return; }
+    setLoading(true); setErrorMsg('');
+    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+    setLoading(false);
+    if (error) {
+      setErrorMsg('帳號或密碼不正確。若你是用 Email 連結登入的舊帳號、還沒設定過密碼，請改用下方「用 Email 連結登入」。');
+    }
+  };
+
+  const signUp = async () => {
+    if (!email.trim() || !password) { toast('請輸入 Email 與密碼'); return; }
+    if (password.length < 8) { setErrorMsg('密碼至少需要 8 個字'); return; }
+    setLoading(true); setErrorMsg('');
+    const { error } = await supabase.auth.signUp({ email: email.trim(), password });
+    setLoading(false);
+    if (error) { setErrorMsg('註冊失敗：' + error.message); return; }
+    toast('📬 請收信驗證你的 Email，完成後即可用密碼登入');
+    setMode('login');
   };
 
   if (sent) return (
@@ -246,24 +273,52 @@ function Login({ toast }) {
           <p style={{ ...S.muted, marginTop: 14, lineHeight: 1.7 }}>每一個你堅持的小習慣，<br />都能化成對世界的溫柔行動。</p>
         </div>
         <div className="cozy-card" style={S.card}>
-          <label style={S.label}>以 Email 登入 / 註冊</label>
+          <label style={S.label}>Email</label>
           <input
             style={S.input}
             type="email"
+            autoComplete="email"
             placeholder="your@email.com"
             value={email}
             onChange={e => setEmail(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && sendLink()}
           />
-          <p style={{ ...S.muted, fontSize: 12, marginTop: 8 }}>我們會寄一封免密碼的登入連結到你的信箱</p>
+          <label style={{ ...S.label, marginTop: 14 }}>密碼</label>
+          <input
+            style={S.input}
+            type="password"
+            autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+            placeholder={mode === 'signup' ? '至少 8 個字' : '••••••••'}
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && (mode === 'signup' ? signUp() : signIn())}
+          />
+          {errorMsg && <p style={{ color: C.coralDeep, fontSize: 12, marginTop: 10, lineHeight: 1.6 }}>{errorMsg}</p>}
         </div>
         <button
           style={{ ...S.btn('primary'), width: '100%', marginTop: 8, justifyContent: 'center' }}
-          onClick={sendLink}
+          onClick={mode === 'signup' ? signUp : signIn}
           disabled={loading}
         >
-          {loading ? '寄送中…' : '寄送登入連結 →'}
+          {loading ? '處理中…' : mode === 'signup' ? '註冊 →' : '登入 →'}
         </button>
+        <div style={{ textAlign: 'center', marginTop: 14 }}>
+          {mode === 'login' ? (
+            <span onClick={() => { setMode('signup'); setErrorMsg(''); }} style={{ fontSize: 12, color: C.muted, cursor: 'pointer', textDecoration: 'underline' }}>沒有密碼？註冊新帳號</span>
+          ) : (
+            <span onClick={() => { setMode('login'); setErrorMsg(''); }} style={{ fontSize: 12, color: C.muted, cursor: 'pointer', textDecoration: 'underline' }}>已有帳號？登入</span>
+          )}
+        </div>
+        <div style={{ textAlign: 'center', marginTop: 8 }}>
+          <span onClick={() => setMagicOpen(o => !o)} style={{ fontSize: 12, color: C.muted, cursor: 'pointer', textDecoration: 'underline' }}>用 Email 連結登入（免密碼）</span>
+        </div>
+        {magicOpen && (
+          <div className="cozy-card" style={{ ...S.card, marginTop: 12 }}>
+            <p style={{ ...S.muted, fontSize: 12, marginBottom: 10 }}>我們會寄一封免密碼的登入連結到 {email || '你的信箱'}</p>
+            <button style={{ ...S.btn('secondary'), width: '100%', justifyContent: 'center' }} onClick={sendLink} disabled={loading}>
+              {loading ? '寄送中…' : '寄送登入連結 →'}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -768,6 +823,45 @@ goal_index 對應上面目標的序號（從 0 開始）`;
   return <div style={S.bg}><div style={S.app}>{aiSteps[aiStep]}</div></div>;
 }
 
+
+// ── Password settings card (for magic-link accounts) ─────
+function PasswordCard({ toast }) {
+  const [open, setOpen] = useState(false);
+  const [pw, setPw] = useState('');
+  const [pw2, setPw2] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const save = async () => {
+    if (pw.length < 8) { toast('密碼至少需要 8 個字'); return; }
+    if (pw !== pw2) { toast('兩次輸入的密碼不一樣'); return; }
+    setBusy(true);
+    const { error } = await supabase.auth.updateUser({ password: pw });
+    setBusy(false);
+    if (error) { toast('設定失敗：' + error.message); return; }
+    toast('🔑 密碼已設定，下次可直接用密碼登入');
+    setPw(''); setPw2(''); setOpen(false);
+  };
+
+  return (
+    <div className="cozy-card" style={{ ...S.card, marginTop: 14 }}>
+      <div style={{ ...S.row, cursor: 'pointer' }} onClick={() => setOpen(o => !o)}>
+        <div style={{ fontWeight: 500, fontSize: 15 }}>🔑 密碼</div>
+        <span style={{ ...S.muted, fontSize: 12, marginLeft: 'auto' }}>{open ? '收起' : '設定 / 修改'}</span>
+      </div>
+      {open && (
+        <div style={{ marginTop: 12 }}>
+          <input style={S.input} type="password" autoComplete="new-password" placeholder="新密碼（至少 8 個字）"
+            value={pw} onChange={e => setPw(e.target.value)} />
+          <input style={{ ...S.input, marginTop: 8 }} type="password" autoComplete="new-password" placeholder="再輸入一次"
+            value={pw2} onChange={e => setPw2(e.target.value)} onKeyDown={e => e.key === 'Enter' && save()} />
+          <button style={{ ...S.btn('primary'), width: '100%', marginTop: 10 }} onClick={save} disabled={busy}>
+            {busy ? '儲存中…' : '儲存密碼'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ── Month Calendar (all habits merged into one) ──────────
 const HABIT_DOT_COLORS = ['#A8D8B9', '#FBE790', '#A5DEE4', '#E8A08A', '#C9A98F', '#B5A8D9'];
@@ -1906,6 +2000,7 @@ function MainApp({ user, toast, onSignOut }) {
           ))}
         </div>
         <ReminderCard />
+        <PasswordCard toast={toast} />
         {/* ── 週節奏卡片 ── */}
         {(() => {
           const weeklyHabits = habits.filter(h => h.frequency?.type === 'weekly');
