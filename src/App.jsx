@@ -999,6 +999,83 @@ ${goalLines}`;
   return JSON.parse(text);
 }
 
+// ── Quick Add Habit Modal (manual, no AI) ─────────────────
+function QuickAddModal({ user, onClose, onSaved, onUseAI, toast }) {
+  const [title, setTitle] = useState('');
+  const [freqType, setFreqType] = useState('daily'); // 'daily' | 'weekly'
+  const [times, setTimes] = useState(3);
+  const [difficulty, setDifficulty] = useState('medium');
+  const [desc, setDesc] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const create = async () => {
+    if (!title.trim()) { toast('請填寫習慣名稱'); return; }
+    setBusy(true);
+    try {
+      await supa.post('habits', {
+        user_id: user.id,
+        title: title.trim(),
+        description: desc.trim(),
+        difficulty,
+        fund_per_day: diffFund(difficulty),
+        is_active: true,
+        goal_label: null,
+        frequency: freqType === 'weekly' ? { type: 'weekly', times } : { type: 'daily' },
+      });
+      await onSaved();
+      onClose();
+      toast('已新增 ✨');
+    } catch { toast('新增失敗'); }
+    setBusy(false);
+  };
+
+  return (
+    <div style={S.modalBg} onClick={e => e.target === e.currentTarget && onClose()}>
+      <div style={S.modal}>
+        <div style={{ width: 40, height: 4, background: '#EADFCF', borderRadius: 2, margin: '0 auto 24px' }} />
+        <div style={{ ...S.h2, marginBottom: 20 }}>快速新增習慣</div>
+
+        <label style={S.label}>習慣名稱</label>
+        <input autoFocus style={{ ...S.input, marginTop: 4, marginBottom: 14 }}
+          value={title} onChange={e => setTitle(e.target.value)} placeholder="例如：每天喝水 2000ml" />
+
+        <label style={S.label}>頻率</label>
+        <div style={{ display: 'flex', gap: 8, marginTop: 6, marginBottom: 14 }}>
+          <div style={S.chip(freqType === 'daily')} onClick={() => setFreqType('daily')}>每天</div>
+          <div style={S.chip(freqType === 'weekly')} onClick={() => setFreqType('weekly')}>每週</div>
+        </div>
+        {freqType === 'weekly' && (
+          <div style={{ ...S.row, marginBottom: 14 }}>
+            <button style={S.btn('secondary')} onClick={() => setTimes(n => Math.max(1, n - 1))}>−</button>
+            <span style={{ fontSize: 15, fontWeight: 600 }}>每週 {times} 次</span>
+            <button style={S.btn('secondary')} onClick={() => setTimes(n => Math.min(7, n + 1))}>＋</button>
+          </div>
+        )}
+
+        <label style={S.label}>難度</label>
+        <div style={{ display: 'flex', gap: 8, marginTop: 6, marginBottom: 14 }}>
+          {['easy', 'medium', 'hard'].map(d => (
+            <div key={d} style={S.chip(difficulty === d)} onClick={() => setDifficulty(d)}>{diffLabel(d)}</div>
+          ))}
+        </div>
+
+        <label style={S.label}>描述（選填）</label>
+        <input style={{ ...S.input, marginTop: 4, marginBottom: 20 }}
+          value={desc} onChange={e => setDesc(e.target.value)} placeholder="一行說明，例如：起床後先喝一杯水" />
+
+        <button style={{ ...S.btn('primary'), width: '100%', justifyContent: 'center' }} onClick={create} disabled={busy}>
+          {busy ? '建立中…' : '建立'}
+        </button>
+        <p style={{ textAlign: 'center', marginTop: 14 }}>
+          <span onClick={onUseAI} style={{ fontSize: 12, color: '#A08B7A', cursor: 'pointer', textDecoration: 'underline' }}>
+            ✨ 用 AI 幫我設計習慣
+          </span>
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // ── Add Habit Modal (AI-assisted) ────────────────────────
 function AddHabitModal({ user, onClose, onSaved, toast }) {
   const [step, setStep] = useState(0); // 0=choose, 1=pick/create goal, 2=suggestions
@@ -1435,6 +1512,7 @@ function ChainBrokenModal({ broken, onDismiss }) {
 function MainApp({ user, toast, onSignOut }) {
   const [tab, setTab] = useState('today');
   const [habits, setHabits] = useState([]);
+  const [pausedHabits, setPausedHabits] = useState([]);
   const [checkins, setCheckins] = useState([]);
   const [fundUses, setFundUses] = useState([]);
   const [modal, setModal] = useState(null);
@@ -1478,12 +1556,13 @@ function MainApp({ user, toast, onSignOut }) {
   };
 
   const load = useCallback(async () => {
-    const [h, c, f] = await Promise.all([
+    const [h, c, f, p] = await Promise.all([
       supa.get('habits', `user_id=eq.${user.id}&is_active=eq.true&order=created_at.asc`),
       supa.get('checkins', `user_id=eq.${user.id}&order=checked_date.desc`),
       supa.get('fund_uses', `user_id=eq.${user.id}&order=created_at.desc`),
+      supa.get('habits', `user_id=eq.${user.id}&is_active=eq.false&order=created_at.asc`),
     ]);
-    setHabits(h || []); setCheckins(c || []); setFundUses(f || []);
+    setHabits(h || []); setCheckins(c || []); setFundUses(f || []); setPausedHabits(p || []);
   }, [user.id]);
 
   const detectChainBreaks = useCallback(async () => {
@@ -1581,9 +1660,14 @@ function MainApp({ user, toast, onSignOut }) {
     } catch { toast('更新失敗'); }
   };
 
-  const deleteHabit = async (id) => {
-    if (!confirm('確定要刪除這個習慣嗎？')) return;
-    try { await supa.patch('habits', `id=eq.${id}`, { is_active: false }); await load(); toast('習慣已刪除'); } catch { toast('刪除失敗'); }
+  const pauseHabit = async (id) => {
+    if (!confirm('確定要暫停這個習慣嗎？紀錄會保留，之後可以恢復。')) return;
+    try { await supa.patch('habits', `id=eq.${id}`, { is_active: false }); await load(); toast('已暫停，紀錄保留 🌙'); } catch { toast('暫停失敗'); }
+  };
+
+  const resumeHabit = async (id) => {
+    if (habits.length >= 5) { setShowCapWarning(true); return; }
+    try { await supa.patch('habits', `id=eq.${id}`, { is_active: true }); await load(); toast('已恢復 🌱'); } catch { toast('恢復失敗'); }
   };
 
   const enableChainMode = async (habitId) => {
@@ -1745,7 +1829,7 @@ function MainApp({ user, toast, onSignOut }) {
         <div style={{ flex: 1 }} />
         <button style={{ ...S.btn('primary'), padding: '9px 18px', fontSize: 13 }} onClick={() => {
           if (habits.length >= 5) { setShowCapWarning(true); }
-          else setModal('add');
+          else setModal('quickadd');
         }}>+ 新增</button>
       </div>
       {habits.length === 0 ? (
@@ -1783,7 +1867,7 @@ function MainApp({ user, toast, onSignOut }) {
                   <span style={{ ...S.muted, fontSize: 12, flex: 1, textAlign: 'right' }}>
                     {isWeekly ? `NT$${h.fund_per_day}/次 · 每週${freq.times}次` : `NT$${h.fund_per_day}/天`}
                   </span>
-                  <button onClick={() => deleteHabit(h.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#A08B7A', fontSize: 20, lineHeight: 1 }}>×</button>
+                  <button onClick={() => pauseHabit(h.id)} title="暫停" aria-label="暫停" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#A08B7A', fontSize: 16, lineHeight: 1 }}>⏸</button>
                 </div>
                 <div style={{ fontWeight: 500, fontSize: 15 }}>{h.title}</div>
                 {(() => {
@@ -1840,6 +1924,32 @@ function MainApp({ user, toast, onSignOut }) {
           })}
         </div>
       ))}
+      {pausedHabits.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <div
+            onClick={() => toggleCollapse('paused-section')}
+            style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 4px', cursor: 'pointer', userSelect: 'none' }}
+          >
+            <span style={{ fontSize: 16 }}>⏸</span>
+            <span style={{ fontWeight: 500, fontSize: 14, flex: 1 }}>已暫停的習慣</span>
+            <span style={{ color: '#A08B7A', fontSize: 13 }}>{collapsed['paused-section'] ? '▶' : '▼'}</span>
+          </div>
+          {!collapsed['paused-section'] && pausedHabits.map(h => {
+            const total = checkins.filter(c => c.habit_id === h.id).length;
+            return (
+              <div key={h.id} className="cozy-card" style={{ ...S.card, opacity: 0.7 }}>
+                <div style={S.row}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 500, fontSize: 15 }}>{h.title}</div>
+                    <div style={{ ...S.muted, fontSize: 12, marginTop: 4 }}>📅 累計 {total} 次</div>
+                  </div>
+                  <button style={{ ...S.btn('secondary'), padding: '7px 14px', fontSize: 12 }} onClick={() => resumeHabit(h.id)}>▶ 恢復</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 
@@ -2123,10 +2233,21 @@ function MainApp({ user, toast, onSignOut }) {
             </div>
             <div style={S.row}>
               <button style={{ ...S.btn('secondary'), flex: 1 }} onClick={() => setShowCapWarning(false)}>先不加了</button>
-              <button style={{ ...S.btn('primary'), flex: 1 }} onClick={() => { setShowCapWarning(false); setModal('add'); }}>我了解，繼續新增</button>
+              <button style={{ ...S.btn('primary'), flex: 1 }} onClick={() => { setShowCapWarning(false); setModal('quickadd'); }}>我了解，繼續新增</button>
             </div>
           </div>
         </div>
+      )}
+
+      {/* Quick Add Habit Modal (manual, default entry) */}
+      {modal === 'quickadd' && (
+        <QuickAddModal
+          user={user}
+          onClose={() => setModal(null)}
+          onSaved={load}
+          onUseAI={() => setModal('add')}
+          toast={toast}
+        />
       )}
 
       {/* Add Habit Modal */}
