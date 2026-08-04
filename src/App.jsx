@@ -46,6 +46,15 @@ const diffLabel = d => ({ easy: '輕鬆', medium: '適中', hard: '挑戰' }[d] 
 const diffFund = d => ({ easy: 5, medium: 10, hard: 20 }[d] || 10);
 const diffColor = d => ({ easy: '#5AA37F', medium: '#C89043', hard: '#D98368' }[d]);
 const diffBg = d => ({ easy: '#E6F2EB', medium: '#FBF3D8', hard: '#F8E7DC' }[d]);
+// description 欄位格式：desc｜觸發：cue｜獎勵：reward（cue/reward 可能不存在）
+const parseDesc = (raw) => {
+  if (!raw) return { desc: '', cue: '', reward: '' };
+  const parts = raw.split('｜');
+  const desc = parts[0] || '';
+  const cue = parts.find(p => p.startsWith('觸發：'))?.replace('觸發：', '') || '';
+  const reward = parts.find(p => p.startsWith('獎勵：'))?.replace('獎勵：', '') || '';
+  return { desc, cue, reward };
+};
 
 // Web Push: VAPID applicationServerKey must be a Uint8Array (URL-safe base64 → bytes).
 const urlBase64ToUint8Array = (base64String) => {
@@ -1082,6 +1091,103 @@ function QuickAddModal({ user, onClose, onSaved, onUseAI, toast }) {
   );
 }
 
+// ── Edit Habit Modal (rename/re-scope an existing habit) ──
+// pet: this habit's pet row (or null) — only used to soften the "already spirit tier" hint.
+function EditHabitModal({ habit, pet, onClose, onSaved, toast }) {
+  const orig = parseDesc(habit.description);
+  const origFreqType = habit.frequency?.type === 'weekly' ? 'weekly' : 'daily';
+  const [title, setTitle] = useState(habit.title);
+  const [freqType, setFreqType] = useState(origFreqType);
+  const [times, setTimes] = useState(habit.frequency?.times || 3);
+  const [difficulty, setDifficulty] = useState(habit.difficulty);
+  const [desc, setDesc] = useState(orig.desc);
+  const [busy, setBusy] = useState(false);
+
+  const freqChanged = freqType !== origFreqType;
+  const diffChanged = difficulty !== habit.difficulty;
+  // 與 Pet.jsx petHealth() 的死亡門檻一致：gap >= 6 * (weekly ? 2 : 1)
+  const deadDays = freqType === 'weekly' ? 12 : 6;
+
+  const save = async () => {
+    if (!title.trim()) { toast('請填寫習慣名稱'); return; }
+    setBusy(true);
+    try {
+      let newDesc = desc.trim();
+      if (orig.cue) newDesc += `｜觸發：${orig.cue}`;
+      if (orig.reward) newDesc += `｜獎勵：${orig.reward}`;
+      await supa.patch('habits', `id=eq.${habit.id}`, {
+        title: title.trim(),
+        description: newDesc,
+        difficulty,
+        fund_per_day: diffFund(difficulty),
+        frequency: freqType === 'weekly' ? { type: 'weekly', times } : { type: 'daily' },
+      });
+      await onSaved();
+      onClose();
+      toast('已更新 ✨');
+    } catch { toast('更新失敗'); }
+    setBusy(false);
+  };
+
+  const hintStyle = { fontSize: 12, color: C.cinnamon, background: '#F7EFE1', borderRadius: 10, padding: '8px 12px', marginTop: -6, marginBottom: 14, lineHeight: 1.6 };
+
+  return (
+    <div style={S.modalBg} onClick={e => e.target === e.currentTarget && onClose()}>
+      <div style={S.modal}>
+        <div style={{ width: 40, height: 4, background: '#EADFCF', borderRadius: 2, margin: '0 auto 24px' }} />
+        <div style={{ ...S.h2, marginBottom: 20 }}>編輯習慣</div>
+
+        <label style={S.label}>習慣名稱</label>
+        <input autoFocus style={{ ...S.input, marginTop: 4, marginBottom: 14 }}
+          value={title} onChange={e => setTitle(e.target.value)} placeholder="例如：每天喝水 2000ml" />
+
+        <label style={S.label}>頻率</label>
+        <div style={{ display: 'flex', gap: 8, marginTop: 6, marginBottom: 14 }}>
+          <div style={S.chip(freqType === 'daily')} onClick={() => setFreqType('daily')}>每天</div>
+          <div style={S.chip(freqType === 'weekly')} onClick={() => setFreqType('weekly')}>每週</div>
+        </div>
+        {freqType === 'weekly' && (
+          <div style={{ ...S.row, marginBottom: 14 }}>
+            <button style={S.btn('secondary')} onClick={() => setTimes(n => Math.max(1, n - 1))}>−</button>
+            <span style={{ fontSize: 15, fontWeight: 600 }}>每週 {times} 次</span>
+            <button style={S.btn('secondary')} onClick={() => setTimes(n => Math.min(7, n + 1))}>＋</button>
+          </div>
+        )}
+        {freqChanged && (
+          <div style={hintStyle}>
+            飢餓時鐘會換成{freqType === 'weekly' ? '每週' : '每日'}的尺度（{deadDays} 天沒打卡才會餓壞），已累積的成長不受影響
+          </div>
+        )}
+
+        <label style={S.label}>難度</label>
+        <div style={{ display: 'flex', gap: 8, marginTop: 6, marginBottom: 14 }}>
+          {['easy', 'medium', 'hard'].map(d => (
+            <div key={d} style={S.chip(difficulty === d)} onClick={() => setDifficulty(d)}>{diffLabel(d)}</div>
+          ))}
+        </div>
+        {diffChanged && (
+          <div style={hintStyle}>
+            {habit.difficulty === 'easy' && difficulty !== 'easy' && <div>已解鎖精靈種進化路線 ✨</div>}
+            {difficulty === 'easy' && pet?.species_tier === 'spirit' && <div>你的寵物已是精靈種，不會被降級；此設定只影響未來判定</div>}
+            <div>之後每次打卡進帳會變成 NT${diffFund(difficulty)}；過去累積的金額不變</div>
+          </div>
+        )}
+
+        <label style={S.label}>描述（選填）</label>
+        <input style={{ ...S.input, marginTop: 4, marginBottom: 20 }}
+          value={desc} onChange={e => setDesc(e.target.value)} placeholder="一行說明，例如：起床後先喝一杯水" />
+
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button style={{ ...S.btn('secondary'), flex: 1, justifyContent: 'center' }} onClick={onClose} disabled={busy}>取消</button>
+          <button style={{ ...S.btn('primary'), flex: 1, justifyContent: 'center' }} onClick={save} disabled={busy}>
+            {busy ? '儲存中…' : '儲存'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Add Habit Modal (AI-assisted) ────────────────────────
 function AddHabitModal({ user, onClose, onSaved, toast }) {
   const [step, setStep] = useState(0); // 0=choose, 1=pick/create goal, 2=suggestions
@@ -1537,15 +1643,7 @@ function MainApp({ user, toast, onSignOut }) {
   const [evolveNews, setEvolveNews] = useState(null);   // {from, to} 進化提示
   const [mourn, setMourn] = useState([]);               // [{name, days, habit}] 哀悼 modal
   const petSyncing = useRef(false);
-
-  const parseDesc = (raw) => {
-    if (!raw) return { desc: '', cue: '', reward: '' };
-    const parts = raw.split('｜');
-    const desc = parts[0] || '';
-    const cue = parts.find(p => p.startsWith('觸發：'))?.replace('觸發：', '') || '';
-    const reward = parts.find(p => p.startsWith('獎勵：'))?.replace('獎勵：', '') || '';
-    return { desc, cue, reward };
-  };
+  const [editHabit, setEditHabit] = useState(null); // 目前編輯中的習慣 object | null
 
   const groupByGoal = (items) => {
     const groups = {};
@@ -2171,6 +2269,7 @@ function MainApp({ user, toast, onSignOut }) {
                   <span style={{ ...S.muted, fontSize: 12, flex: 1, textAlign: 'right' }}>
                     {isWeekly ? `NT$${h.fund_per_day}/次 · 每週${freq.times}次` : `NT$${h.fund_per_day}/天`}
                   </span>
+                  <button onClick={() => setEditHabit(h)} title="編輯" aria-label="編輯" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#A08B7A', fontSize: 16, lineHeight: 1, marginRight: 8 }}>✏️</button>
                   <button onClick={() => pauseHabit(h.id)} title="暫停" aria-label="暫停" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#A08B7A', fontSize: 16, lineHeight: 1 }}>⏸</button>
                 </div>
                 <div style={{ fontWeight: 500, fontSize: 15 }}>{h.title}</div>
@@ -2649,6 +2748,17 @@ function MainApp({ user, toast, onSignOut }) {
         <AddHabitModal
           user={user}
           onClose={() => setModal(null)}
+          onSaved={load}
+          toast={toast}
+        />
+      )}
+
+      {/* Edit Habit Modal */}
+      {editHabit && (
+        <EditHabitModal
+          habit={editHabit}
+          pet={petOf(editHabit.id)}
+          onClose={() => setEditHabit(null)}
           onSaved={load}
           toast={toast}
         />
