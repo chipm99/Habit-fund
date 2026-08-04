@@ -1,5 +1,6 @@
 // Nightly reminder cron (Vercel Cron → 21:30 Asia/Taipei).
-// For each user with active habits and ZERO check-ins today, send a gentle push.
+// Priority: 虛弱寵物（今晚不打卡就會餓死）> 肚子餓的寵物 > 一般「今天還沒打卡」提醒。
+// 已經餓死的寵物不再推播（避免鞭屍）。
 // Protected by CRON_SECRET. Reads via Supabase service-role key (bypasses RLS).
 import webpush from 'web-push';
 
@@ -20,6 +21,32 @@ const COPY_RESTART = [
   '🌱 一格就好，今天輕輕開始',
   '🌱 今天留了一格空位給你',
 ];
+
+// 寵物虛弱：今晚不打卡就會離開（最後機會，溫柔但急）
+const COPY_WEAK = [
+  '🥺 小傢伙快撐不住了——今晚打一次卡就能救牠',
+  '🥺 牠等你等到沒力氣了，一格就能把牠救回來',
+  '🥺 今晚是最後機會，開一格陪陪牠',
+  '🥺 牠還在等你回來，一次打卡就夠了',
+];
+// 寵物肚子餓
+const COPY_HUNGRY = [
+  '🍚 你的寵物餓了，開一格餵餵牠',
+  '🍚 牠肚子咕嚕叫了，今天陪牠一下吧',
+  '🍚 小夥伴在等飯吃，一格就好',
+  '🍚 牠有點餓了，開一格就會好起來',
+];
+
+// 飢餓門檻（與 App/Pet.jsx 的 petHealth 同一把尺）：每日 3 餓 / 5 虛弱 / 6 死；每週 ×2
+const healthOf = (gap, weekly) => {
+  const m = weekly ? 2 : 1;
+  if (gap >= 6 * m) return 'dead';
+  if (gap >= 5 * m) return 'weak';
+  if (gap >= 3 * m) return 'hungry';
+  return 'ok';
+};
+
+const dayDiff = (a, b) => Math.round((Date.parse(a + 'T00:00:00Z') - Date.parse(b + 'T00:00:00Z')) / 86400000);
 
 // YYYY-MM-DD for a Date in Asia/Taipei (UTC+8, no DST).
 const taipeiDate = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei' }).format(d);
@@ -69,18 +96,38 @@ export default async function handler(req, res) {
   const doy = Math.floor((Date.UTC(y, m - 1, d) - Date.UTC(y, 0, 1)) / 86400000);
 
   try {
-    const [subs, activeHabits, recentCheckins] = await Promise.all([
+    // 20 天視窗：足以算出所有還活著的寵物的 gap（超過 20 天沒打卡的一定已經餓死）
+    const windowStart = taipeiDate(new Date(Date.now() - 20 * 86400000));
+    const [subs, activeHabits, recentCheckins, petRows] = await Promise.all([
       sb('push_subscriptions?select=user_id,subscription,endpoint'),
-      sb('habits?is_active=eq.true&select=user_id'),
-      sb(`checkins?checked_date=in.(${today},${yesterday})&select=user_id,checked_date`),
+      sb('habits?is_active=eq.true&select=id,user_id,frequency'),
+      sb(`checkins?checked_date=gte.${windowStart}&select=user_id,habit_id,checked_date`),
+      sb('pets?select=user_id,habit_id,species_tier,hatched_at').catch(() => []), // pets.sql 未執行時降級為一般提醒
     ]);
 
     const usersWithHabits = new Set((activeHabits || []).map(h => h.user_id));
+    const habitById = new Map((activeHabits || []).map(h => [h.id, h]));
     const checkedToday = new Set();
     const checkedYesterday = new Set();
+    const lastByHabit = new Map();
     for (const c of recentCheckins || []) {
       if (c.checked_date === today) checkedToday.add(c.user_id);
-      else if (c.checked_date === yesterday) checkedYesterday.add(c.user_id);
+      if (c.checked_date === yesterday) checkedYesterday.add(c.user_id);
+      const prev = lastByHabit.get(c.habit_id);
+      if (!prev || c.checked_date > prev) lastByHabit.set(c.habit_id, c.checked_date);
+    }
+
+    // 每個 user 最緊急的寵物狀態（只看已孵化、還活著的；死掉的跳過不鞭屍）
+    const urgent = new Map(); // user_id → 'weak' | 'hungry'
+    for (const p of petRows || []) {
+      if (!p.hatched_at || p.species_tier === 'egg') continue;
+      const habit = habitById.get(p.habit_id);
+      if (!habit) continue;
+      const last = lastByHabit.get(p.habit_id);
+      const gap = last ? dayDiff(today, last) : 99;
+      const state = healthOf(gap, habit.frequency && habit.frequency.type === 'weekly');
+      if (state === 'weak') urgent.set(p.user_id, 'weak');
+      else if (state === 'hungry' && urgent.get(p.user_id) !== 'weak') urgent.set(p.user_id, 'hungry');
     }
 
     let sent = 0, skipped = 0, pruned = 0, failed = 0;
@@ -88,10 +135,15 @@ export default async function handler(req, res) {
 
     for (const s of subs || []) {
       const uid = s.user_id;
-      // Only nudge users who have something to check in and haven't yet today.
-      if (!usersWithHabits.has(uid) || checkedToday.has(uid)) { skipped++; continue; }
+      if (!usersWithHabits.has(uid)) { skipped++; continue; }
 
-      const pool = checkedYesterday.has(uid) ? COPY_STREAK : COPY_RESTART;
+      // 寵物狀態優先：虛弱 > 肚子餓 > 一般提醒（一般提醒仍只在今天零打卡時送）
+      const state = urgent.get(uid);
+      let pool;
+      if (state === 'weak') pool = COPY_WEAK;
+      else if (state === 'hungry') pool = COPY_HUNGRY;
+      else if (checkedToday.has(uid)) { skipped++; continue; }
+      else pool = checkedYesterday.has(uid) ? COPY_STREAK : COPY_RESTART;
       const body = pool[doy % pool.length];
       const payload = JSON.stringify({ title: '好習慣基金', body, data: { url: '/' } });
 

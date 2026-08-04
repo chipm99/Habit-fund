@@ -2,6 +2,12 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { createClient } from '@supabase/supabase-js';
 import FluidBackground from './FluidBackground.jsx';
 import CheckinCelebration from './CheckinCelebration.jsx';
+import {
+  Pet, Egg, GIFTS, HATCH_DAYS, STAGE_LABEL, TIER_LABEL,
+  speciesLabel, pickSpecies, stageIndex, petXp, evolveTier, nextTierGoal,
+  isoWeek, nextMondayLabel, hueFromId, patternFromId,
+  diffMult, petHealth, HEALTH_LABEL,
+} from './Pet.jsx';
 
 const SUPABASE_URL = 'https://keenwhiygrrnxhllibxa.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_ZrftrM1kZGX3odvfJQG0Pw_jNriTgc6';
@@ -1524,6 +1530,13 @@ function MainApp({ user, toast, onSignOut }) {
   const chainChecked = useRef(false);
   const celebRef = useRef(null); // check-in celebration canvas
   const [confirmChainHabit, setConfirmChainHabit] = useState(null); // habitId | null
+  // ── 電子寵物 ──
+  const [pets, setPets] = useState([]);
+  const [petsError, setPetsError] = useState(false); // pets 表還沒建（supabase/pets.sql 未執行）
+  const [giftHabitId, setGiftHabitId] = useState(null); // 禮物商店 modal 對應的習慣
+  const [evolveNews, setEvolveNews] = useState(null);   // {from, to} 進化提示
+  const [mourn, setMourn] = useState([]);               // [{name, days, habit}] 哀悼 modal
+  const petSyncing = useRef(false);
 
   const parseDesc = (raw) => {
     if (!raw) return { desc: '', cue: '', reward: '' };
@@ -1563,6 +1576,11 @@ function MainApp({ user, toast, onSignOut }) {
       supa.get('habits', `user_id=eq.${user.id}&is_active=eq.false&order=created_at.asc`),
     ]);
     setHabits(h || []); setCheckins(c || []); setFundUses(f || []); setPausedHabits(p || []);
+    // pets 單獨抓：若 supabase/pets.sql 還沒執行，整頁其他功能不受影響
+    try {
+      const pt = await supa.get('pets', `user_id=eq.${user.id}`);
+      setPets(pt || []); setPetsError(false);
+    } catch { setPets([]); setPetsError(true); }
   }, [user.id]);
 
   const detectChainBreaks = useCallback(async () => {
@@ -1631,6 +1649,123 @@ function MainApp({ user, toast, onSignOut }) {
     }, 0);
     const used = fundUses.reduce((s, u) => s + Number(u.amount), 0);
     return { earned, used, balance: earned - used };
+  };
+
+  // ── 電子寵物：資料與規則（與 calcFund 的捐款基金完全分離）──────
+  const petOf = (habitId) => pets.find(p => p.habit_id === habitId) || null;
+  const totalChecks = (habitId) => checkins.filter(c => c.habit_id === habitId).length;
+  // 成長用的 days：重生後只算 revived_at 之後的打卡（沒死過就是全部）
+  const petDays = (habitId) => {
+    const from = petOf(habitId)?.revived_at;
+    if (!from) return totalChecks(habitId);
+    const fromDate = String(from).split('T')[0];
+    return checkins.filter(c => c.habit_id === habitId && c.checked_date >= fromDate).length;
+  };
+  // 寵物幣＝該習慣打卡數×fund_per_day − 已花費；不動 fund_uses，也不影響捐款餘額
+  const petCoins = (h) => totalChecks(h.id) * h.fund_per_day - (Number(petOf(h.id)?.coins_spent) || 0);
+  const totalPetCoins = habits.reduce((s, h) => s + petCoins(h), 0);
+
+  // gap = 今天 − 最後打卡日（從未打卡則自 created_at 起算）
+  const petGap = (h) => {
+    const dates = checkins.filter(c => c.habit_id === h.id).map(c => c.checked_date).sort();
+    const base = dates.length ? dates[dates.length - 1] : (h.created_at || '').split('T')[0];
+    if (!base) return 0;
+    return Math.max(0, Math.round((new Date(todayStr() + 'T00:00:00') - new Date(base + 'T00:00:00')) / 86400000));
+  };
+  const petHealthOf = (h) => petHealth(petGap(h), h.frequency?.type === 'weekly');
+  const petXpOf = (h, p) =>
+    petXp(petDays(h.id), Array.isArray(p?.gift_log) ? p.gift_log : [], diffMult(h.difficulty), p?.xp_base || 0);
+
+  // 載入時：① 沒寵物的 active 習慣自動建蛋 ② days>=14 自動孵化 ③ 餓死→留紀念並重新孵蛋
+  const syncPets = useCallback(async () => {
+    if (petsError || petSyncing.current || !habits.length) return;
+    const missing = habits.filter(h => !pets.some(p => p.habit_id === h.id));
+    const hatchedPets = habits
+      .map(h => ({ h, p: pets.find(p => p.habit_id === h.id) }))
+      .filter(x => x.p);
+    const toHatch = hatchedPets.filter(({ h, p }) =>
+      !p.hatched_at && petDays(h.id) >= HATCH_DAYS
+    );
+    // 只有「已孵化」的寵物會餓死；還沒破殼的蛋只是停在原地等你回來
+    const toDie = hatchedPets.filter(({ h, p }) =>
+      p.hatched_at && p.species_tier !== 'egg' && petHealthOf(h) === 'dead'
+    );
+    if (!missing.length && !toHatch.length && !toDie.length) return;
+    petSyncing.current = true;
+    try {
+      for (const h of missing) {
+        await supa.post('pets', {
+          user_id: user.id, habit_id: h.id, species_tier: 'egg',
+          hue: hueFromId(h.id), pattern: patternFromId(h.id), // 由 habit.id hash 決定，穩定不隨機
+        });
+      }
+      for (const { h, p } of toHatch) {
+        await supa.patch('pets', `id=eq.${p.id}`, {
+          hatched_at: new Date().toISOString(),
+          species_tier: 'insect',
+          species_key: pickSpecies('insect', p.hue),
+          xp: petXpOf(h, p),
+        });
+      }
+      // 死亡 → 留下紀念、保留 30% 經驗、換新花色重新孵蛋
+      const gone = [];
+      for (const { h, p } of toDie) {
+        const lived = petDays(h.id);
+        const keptXp = Math.floor(petXpOf(h, p) * 0.3);
+        const memorials = [
+          ...(Array.isArray(p.memorials) ? p.memorials : []),
+          { species_key: p.species_key, tier: p.species_tier, days: lived, hue: p.hue, pattern: p.pattern, died_at: new Date().toISOString() },
+        ];
+        const seed = `${h.id}:${memorials.length}`; // 新蛋換花色，穩定不隨機
+        await supa.patch('pets', `id=eq.${p.id}`, {
+          memorials,
+          xp_base: keptXp,
+          xp: keptXp,
+          revived_at: new Date().toISOString(),
+          hatched_at: null,
+          gift_log: [],
+          species_tier: 'egg',
+          species_key: null,
+          hue: hueFromId(seed),
+          pattern: patternFromId(seed),
+        });
+        gone.push({ name: speciesLabel(p.species_tier, p.species_key), days: lived, habit: h.title });
+      }
+      if (toHatch.length) { celebRef.current?.fire(); toast('蛋孵化了！小夥伴誕生 🐣'); }
+      if (gone.length) setMourn(gone);
+      await load();
+    } catch (e) { console.error('pet sync failed:', e); setPetsError(true); }
+    finally { petSyncing.current = false; }
+  }, [habits, pets, checkins, petsError, user.id, load, toast]);
+
+  useEffect(() => { syncPets(); }, [syncPets]);
+
+  // 餵食：每隻每週限一次（ISO 週），費用從全域寵物幣扣、記在被餵的那隻
+  const feedPet = async (giftKey) => {
+    const h = habits.find(x => x.id === giftHabitId);
+    const p = h ? petOf(h.id) : null;
+    const gift = GIFTS.find(g => g.key === giftKey);
+    if (!h || !p || !gift) return;
+    const log = Array.isArray(p.gift_log) ? p.gift_log : [];
+    if (log.some(g => g.week === isoWeek())) { toast('本週已經餵過了，下週一再來 🍃'); return; }
+    if (totalPetCoins < gift.cost) { toast('寵物幣不夠，再多打幾天卡吧 🌱'); return; }
+    const newLog = [...log, { week: isoWeek(), gift: gift.key, rarity: gift.rarity, cost: gift.cost, at: new Date().toISOString() }];
+    const xp = petXp(petDays(h.id), newLog, diffMult(h.difficulty), p.xp_base || 0);
+    const nextTier = evolveTier(p.species_tier, xp, newLog, h.difficulty);
+    const evolved = nextTier !== p.species_tier;
+    const patch = { gift_log: newLog, xp, coins_spent: (Number(p.coins_spent) || 0) + gift.cost };
+    if (evolved) { patch.species_tier = nextTier; patch.species_key = pickSpecies(nextTier, p.hue); }
+    try {
+      await supa.patch('pets', `id=eq.${p.id}`, patch);
+      await load();
+      setGiftHabitId(null);
+      if (evolved) {
+        celebRef.current?.fire();
+        setEvolveNews({ from: speciesLabel(p.species_tier, p.species_key), to: speciesLabel(nextTier, patch.species_key) });
+      } else {
+        toast(`${gift.emoji} 餵食成功，牠很開心！`);
+      }
+    } catch { toast('餵食失敗'); }
   };
 
   const toggleCheckin = async (hId, done, origin) => {
@@ -1770,6 +1905,15 @@ function MainApp({ user, toast, onSignOut }) {
                           display: 'flex', alignItems: 'center', justifyContent: 'center', color: done ? '#FFFDF9' : 'transparent', fontSize: 20, fontWeight: 700,
                           boxShadow: done ? `2px 2px 0 #CDE7D8` : `2px 2px 0 #EDE3D4`,
                         }}>✓</button>
+                      {petOf(h.id) && (
+                        <div
+                          onClick={() => setTab('pet')}
+                          title="看看牠"
+                          style={{ flexShrink: 0, width: 32, height: 32, cursor: 'pointer', marginLeft: -4 }}
+                        >
+                          <Pet pet={petOf(h.id)} days={petDays(h.id)} size={32} health={petHealthOf(h)} />
+                        </div>
+                      )}
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontWeight: 500, opacity: done ? 0.4 : 1, textDecoration: done ? 'line-through' : 'none' }}>{h.title}</div>
                         {isWeekly ? (
@@ -1818,6 +1962,166 @@ function MainApp({ user, toast, onSignOut }) {
           <div style={{ fontSize: 32 }}>🌱</div>
         </div>
       </>)}
+    </div>
+  );
+
+  // ── PET ───────────────────────────────────────────────
+  const PetTab = () => (
+    <div>
+      <div style={{ ...S.row, padding: '12px 0 20px' }}>
+        <div>
+          <div style={S.h2}>我的小夥伴</div>
+          <p style={{ ...S.muted, fontSize: 13 }}>每個習慣養一隻，打卡讓牠慢慢長大</p>
+        </div>
+        <div style={{ flex: 1 }} />
+        <div style={{ textAlign: 'right', flexShrink: 0 }}>
+          <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, letterSpacing: '0.05em' }}>寵物幣</div>
+          <div style={{ fontFamily: "'Zen Maru Gothic', 'DM Sans', sans-serif", fontSize: '1.4rem', color: C.honey }}>🪙 {totalPetCoins}</div>
+        </div>
+      </div>
+
+      {petsError && (
+        <div className="cozy-card" style={{ ...S.card, background: '#FBF3D8' }}>
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>還沒建立寵物資料表 🛠️</div>
+          <p style={{ ...S.muted, fontSize: 13, lineHeight: 1.75 }}>
+            請到 Supabase → SQL Editor 執行專案裡的 supabase/pets.sql，回來重新整理就會看到蛋。
+          </p>
+        </div>
+      )}
+
+      {habits.length === 0 && !petsError && (
+        <div style={{ textAlign: 'center', padding: '48px 24px', color: C.muted }}>
+          <div style={{ fontSize: 40, marginBottom: 12 }}>🥚</div>
+          <p>先新增一個習慣，就會有一顆蛋在等你</p>
+        </div>
+      )}
+
+      {habits.map(h => {
+        const p = petOf(h.id);
+        if (!p) return null;
+        const days = petDays(h.id);
+        const log = Array.isArray(p.gift_log) ? p.gift_log : [];
+        const hatched = !!p.hatched_at && p.species_tier !== 'egg';
+        const daysLeft = Math.max(0, HATCH_DAYS - days);
+        const xp = petXpOf(h, p);
+        const fed = log.some(g => g.week === isoWeek());
+        const coins = petCoins(h);
+        const stage = stageIndex(days);
+        const health = hatched ? petHealthOf(h) : 'ok';
+        const goal = hatched ? nextTierGoal(p.species_tier, xp, log, h.difficulty) : null;
+        return (
+          <div key={h.id} className="cozy-card" style={{ ...S.card, textAlign: 'center', paddingTop: 18 }}>
+            <div style={{ display: 'flex', justifyContent: 'center' }}>
+              <div style={{
+                width: 172, height: 172, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                borderRadius: '50% 47% 53% 48%',
+                background: `radial-gradient(60% 60% at 50% 45%, hsl(${p.hue},60%,95%) 0%, rgba(255,253,249,0) 72%)`,
+              }}>
+                <Pet pet={p} days={days} size={142} health={health} />
+              </div>
+            </div>
+
+            <div style={{ fontWeight: 600, fontSize: 16, marginTop: 2 }}>{h.title}</div>
+
+            {/* 飢餓／虛弱警示（溫柔但有急迫感） */}
+            {health !== 'ok' && (
+              <div style={{
+                margin: '10px auto 0', maxWidth: 300, padding: '9px 14px',
+                borderRadius: '15px 12px 16px 13px', fontSize: 13, fontWeight: 500,
+                background: health === 'weak' ? '#F8E7DC' : '#FBF3D8',
+                color: health === 'weak' ? C.coralDeep : C.honey,
+                border: `1.5px solid ${health === 'weak' ? '#EFC4B2' : '#EFE0B4'}`,
+              }}>
+                {health === 'weak'
+                  ? '🥺 牠快撐不住了——今天打一次卡就能救牠'
+                  : '🍚 肚子餓了，開一格陪陪牠吧'}
+              </div>
+            )}
+
+            {!hatched ? (
+              <>
+                <div style={{ ...S.muted, fontSize: 13, margin: '8px 0 8px' }}>
+                  {daysLeft > 0 ? `還要 ${daysLeft} 天孵化` : '就快破殼了…'}
+                </div>
+                <div style={{ background: '#EADFCF', borderRadius: 100, height: 6, overflow: 'hidden', maxWidth: 220, margin: '0 auto' }}>
+                  <div style={{ background: C.leaf, height: 6, borderRadius: 100, width: `${Math.min(100, days / HATCH_DAYS * 100)}%`, transition: 'width .5s ease' }} />
+                </div>
+                <div style={{ ...S.muted, fontSize: 11, marginTop: 6 }}>已累積 {days} / {HATCH_DAYS} 次打卡</div>
+              </>
+            ) : (
+              <>
+                <div style={{ display: 'flex', gap: 6, justifyContent: 'center', flexWrap: 'wrap', margin: '10px 0 8px' }}>
+                  <span style={{ ...S.chip(true), padding: '5px 12px', fontSize: 12 }}>{speciesLabel(p.species_tier, p.species_key)}</span>
+                  <span style={{ ...S.chip(false), padding: '5px 12px', fontSize: 12 }}>{TIER_LABEL[p.species_tier]}</span>
+                  <span style={{ ...S.chip(false), padding: '5px 12px', fontSize: 12 }}>{STAGE_LABEL[stage]}體型</span>
+                </div>
+                <div style={{ ...S.muted, fontSize: 12 }}>XP {xp} · 已收到 {log.length} 份禮物 · 打卡 {days} 次 · 難度 {diffLabel(h.difficulty)}（xp ×{diffMult(h.difficulty)}）</div>
+                {/* 進化進度 */}
+                {goal && (
+                  <div style={{ ...S.muted, fontSize: 12, marginTop: 6, lineHeight: 1.7 }}>
+                    {goal.capped
+                      ? '輕鬆難度最高可達保育類；想養出精靈種，把習慣難度調到適中以上 ✨'
+                      : `距離「${goal.label}」：${[
+                          goal.needXp > 0 ? `xp 還差 ${goal.needXp}` : null,
+                          goal.needGifts > 0 ? `還差 ${goal.needGifts} 次餵食` : null,
+                          goal.needAvg > 0 ? `平均稀有度需 ${goal.needAvg.toFixed(1)}（目前 ${goal.avg.toFixed(1)}）` : null,
+                        ].filter(Boolean).join('、') || '條件已達成，下次餵食就會進化 🎉'}`}
+                  </div>
+                )}
+              </>
+            )}
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 16, justifyContent: 'center' }}>
+              <span style={{ fontSize: 13, color: C.honey, fontWeight: 600 }}>🪙 {coins}</span>
+              <button
+                style={{
+                  ...S.btn(hatched && !fed ? 'primary' : 'secondary'),
+                  padding: '9px 18px', fontSize: 13,
+                  opacity: hatched && !fed ? 1 : 0.55,
+                  cursor: hatched && !fed ? 'pointer' : 'default',
+                }}
+                onClick={() => { if (hatched && !fed) setGiftHabitId(h.id); }}
+              >
+                {!hatched ? '🥚 孵化後才能餵食' : fed ? `🍃 本週已餵食（${nextMondayLabel()} 開放）` : '🎁 餵食'}
+              </button>
+            </div>
+          </div>
+        );
+      })}
+
+      {/* 回憶相簿：曾經陪過你的小夥伴 */}
+      {(() => {
+        const memos = habits.flatMap(h => {
+          const p = petOf(h.id);
+          return (Array.isArray(p?.memorials) ? p.memorials : []).map((m, i) => ({ ...m, habit: h.title, key: `${h.id}-${i}` }));
+        });
+        if (!memos.length) return null;
+        return (
+          <div className="cozy-card" style={S.card}>
+            <div onClick={() => toggleCollapse('pet-memorial')} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
+              <span style={{ fontSize: 16 }}>🕊️</span>
+              <span style={{ fontWeight: 600, fontSize: 14, flex: 1 }}>回憶相簿（{memos.length}）</span>
+              <span style={{ color: C.muted, fontSize: 13 }}>{collapsed['pet-memorial'] ? '▶' : '▼'}</span>
+            </div>
+            {!collapsed['pet-memorial'] && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, marginTop: 14 }}>
+                {memos.map(m => (
+                  <div key={m.key} style={{ width: 78, textAlign: 'center' }}>
+                    <div style={{ filter: 'grayscale(1)', opacity: 0.5, display: 'flex', justifyContent: 'center' }}>
+                      <Pet
+                        pet={{ hue: m.hue, pattern: m.pattern, species_tier: m.tier, species_key: m.species_key, hatched_at: m.died_at }}
+                        days={m.days} size={56}
+                      />
+                    </div>
+                    <div style={{ fontSize: 11, fontWeight: 600, marginTop: 2 }}>{speciesLabel(m.tier, m.species_key)}</div>
+                    <div style={{ fontSize: 10, color: C.muted }}>陪伴 {m.days} 天</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 
@@ -2178,7 +2482,7 @@ function MainApp({ user, toast, onSignOut }) {
     );
   };
 
-  const tabs = { today: <TodayTab />, habits: <HabitsTab />, fund: <FundTab />, dashboard: <DashboardTab /> };
+  const tabs = { today: <TodayTab />, pet: <PetTab />, habits: <HabitsTab />, fund: <FundTab />, dashboard: <DashboardTab /> };
 
   return (
     <div style={S.bg}>
@@ -2200,10 +2504,100 @@ function MainApp({ user, toast, onSignOut }) {
         </Modal>
       )}
 
+      {/* 禮物商店（每隻每週限兌一次） */}
+      {giftHabitId && (() => {
+        const h = habits.find(x => x.id === giftHabitId);
+        const p = h ? petOf(h.id) : null;
+        if (!h || !p) return null;
+        const log = Array.isArray(p.gift_log) ? p.gift_log : [];
+        const fed = log.some(g => g.week === isoWeek());
+        return (
+          <Modal open title="🎁 禮物商店" onClose={() => setGiftHabitId(null)}>
+            <div style={{ ...S.row, marginBottom: 16 }}>
+              <Pet pet={p} days={petDays(h.id)} size={54} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 15 }}>{speciesLabel(p.species_tier, p.species_key)}</div>
+                <div style={{ ...S.muted, fontSize: 12 }}>{h.title}</div>
+              </div>
+              <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                <div style={{ fontSize: 11, color: C.muted }}>可用寵物幣</div>
+                <div style={{ color: C.honey, fontWeight: 700 }}>🪙 {totalPetCoins}</div>
+              </div>
+            </div>
+
+            {fed ? (
+              <div className="cozy-card" style={{ ...S.card, textAlign: 'center', background: '#E6F2EB' }}>
+                <div style={{ fontSize: 30, marginBottom: 8 }}>🍃</div>
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>本週已餵食</div>
+                <p style={{ ...S.muted, fontSize: 13 }}>下週一（{nextMondayLabel()}）開放，讓牠好好消化 ✨</p>
+              </div>
+            ) : (
+              GIFTS.map(g => {
+                const afford = totalPetCoins >= g.cost;
+                return (
+                  <button
+                    key={g.key}
+                    onClick={() => afford && feedPet(g.key)}
+                    style={{
+                      width: '100%', display: 'flex', alignItems: 'center', gap: 14, textAlign: 'left',
+                      background: C.paper, border: `1.5px solid ${C.border}`, borderRadius: '17px 14px 18px 13px',
+                      padding: '12px 16px', marginBottom: 10, cursor: afford ? 'pointer' : 'default',
+                      opacity: afford ? 1 : 0.42, fontFamily: 'inherit', color: C.ink,
+                      boxShadow: afford ? '2px 3px 0 #EFE1CE' : 'none',
+                    }}
+                  >
+                    <span style={{ fontSize: 26, flexShrink: 0 }}>{g.emoji}</span>
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      <span style={{ display: 'block', fontWeight: 600, fontSize: 15 }}>{g.name}</span>
+                      <span style={{ display: 'block', fontSize: 12, color: C.lemonDeep }}>{'★'.repeat(g.rarity)}<span style={{ color: C.line }}>{'★'.repeat(5 - g.rarity)}</span></span>
+                    </span>
+                    <span style={{ color: afford ? C.honey : C.muted, fontWeight: 700, fontSize: 14, flexShrink: 0 }}>🪙 {g.cost}</span>
+                  </button>
+                );
+              })
+            )}
+            <p style={{ ...S.muted, fontSize: 11, textAlign: 'center', marginTop: 6, lineHeight: 1.7 }}>
+              寵物幣由打卡累積，與捐款基金分開計算，餵食不會減少你的捐款餘額。
+            </p>
+          </Modal>
+        );
+      })()}
+
+      {/* 哀悼（溫柔、不責備） */}
+      {mourn.length > 0 && (
+        <Modal open title="🕊️ 道別" onClose={() => setMourn([])}>
+          {mourn.map((m, i) => (
+            <p key={i} style={{ fontSize: 15, lineHeight: 2, textAlign: 'center', marginBottom: 10 }}>
+              <strong>{m.name}</strong> 離開了。<br />牠陪你走了 {m.days} 天。
+            </p>
+          ))}
+          <div className="cozy-card" style={{ ...S.card, background: '#E6F2EB', textAlign: 'center' }}>
+            <div style={{ fontSize: 26, marginBottom: 6 }}>🥚</div>
+            <p style={{ fontSize: 13, lineHeight: 1.9, color: C.cinnamon }}>
+              新的蛋已經在孵了。<br />牠會記得你學過的事（保留 30% 成長）。
+            </p>
+          </div>
+          <button style={{ ...S.btn('primary'), width: '100%', marginTop: 4 }} onClick={() => { setMourn([]); setTab('pet'); }}>
+            好好照顧下一隻 🌱
+          </button>
+        </Modal>
+      )}
+
+      {/* 進化提示 */}
+      {evolveNews && (
+        <Modal open title="🎉 進化了！" onClose={() => setEvolveNews(null)}>
+          <p style={{ fontSize: 16, lineHeight: 1.9, marginBottom: 20, textAlign: 'center' }}>
+            你的 <strong>{evolveNews.from}</strong><br />進化成 <strong style={{ color: C.leaf }}>{evolveNews.to}</strong> 了！
+          </p>
+          <button style={{ ...S.btn('primary'), width: '100%' }} onClick={() => setEvolveNews(null)}>太好了 ✨</button>
+        </Modal>
+      )}
+
       {/* Nav */}
       <nav style={S.nav}>
         {[
           { id: 'today', label: '今日', icon: '◷' },
+          { id: 'pet', label: '寵物', icon: '🥚' },
           { id: 'habits', label: '習慣', icon: '✓' },
           { id: 'fund', label: '基金', icon: '◎' },
           { id: 'dashboard', label: '總覽', icon: '⊞' },
