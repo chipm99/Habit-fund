@@ -1014,13 +1014,67 @@ ${goalLines}`;
   return JSON.parse(text);
 }
 
+// ── Goal Picker (shared) ──────────────────────────────────
+// value: current goal_label (string | null). options: deduped non-empty goal strings.
+// onChange(nextLabelOrNull) fires on pick, on "未分類", and on new-goal creation.
+function GoalPicker({ value, options, onChange, label = '歸屬目標' }) {
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState('');
+
+  const commitNew = () => {
+    if (!draft.trim()) return;
+    onChange(draft.trim());
+    setAdding(false);
+    setDraft('');
+  };
+
+  if (adding) {
+    return (
+      <div style={{ marginTop: 12 }}>
+        <label style={S.label}>{label}</label>
+        <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+          <input
+            autoFocus
+            style={S.input}
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') commitNew(); if (e.key === 'Escape') { setAdding(false); setDraft(''); } }}
+            placeholder="新目標名稱"
+          />
+          <button style={S.btn('secondary')} onClick={() => { setAdding(false); setDraft(''); }}>取消</button>
+          <button style={S.btn('primary')} onClick={commitNew}>加入</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <label style={S.label}>{label}</label>
+      <select
+        style={{ ...S.input, marginTop: 4 }}
+        value={value || ''}
+        onChange={e => {
+          if (e.target.value === '__new__') setAdding(true);
+          else onChange(e.target.value || null);
+        }}
+      >
+        <option value="">未分類</option>
+        {options.map(g => <option key={g} value={g}>{g}</option>)}
+        <option value="__new__">＋ 新增目標…</option>
+      </select>
+    </div>
+  );
+}
+
 // ── Quick Add Habit Modal (manual, no AI) ─────────────────
-function QuickAddModal({ user, onClose, onSaved, onUseAI, toast }) {
+function QuickAddModal({ user, goalOptions, onClose, onSaved, onUseAI, toast }) {
   const [title, setTitle] = useState('');
   const [freqType, setFreqType] = useState('daily'); // 'daily' | 'weekly'
   const [times, setTimes] = useState(3);
   const [difficulty, setDifficulty] = useState('medium');
   const [desc, setDesc] = useState('');
+  const [goalLabel, setGoalLabel] = useState(null);
   const [busy, setBusy] = useState(false);
 
   const create = async () => {
@@ -1034,7 +1088,7 @@ function QuickAddModal({ user, onClose, onSaved, onUseAI, toast }) {
         difficulty,
         fund_per_day: diffFund(difficulty),
         is_active: true,
-        goal_label: null,
+        goal_label: goalLabel || null,
         frequency: freqType === 'weekly' ? { type: 'weekly', times } : { type: 'daily' },
       });
       await onSaved();
@@ -1075,8 +1129,12 @@ function QuickAddModal({ user, onClose, onSaved, onUseAI, toast }) {
         </div>
 
         <label style={S.label}>描述（選填）</label>
-        <input style={{ ...S.input, marginTop: 4, marginBottom: 20 }}
+        <input style={{ ...S.input, marginTop: 4 }}
           value={desc} onChange={e => setDesc(e.target.value)} placeholder="一行說明，例如：起床後先喝一杯水" />
+
+        <div style={{ marginBottom: 20 }}>
+          <GoalPicker value={goalLabel} options={goalOptions} onChange={setGoalLabel} />
+        </div>
 
         <button style={{ ...S.btn('primary'), width: '100%', justifyContent: 'center' }} onClick={create} disabled={busy}>
           {busy ? '建立中…' : '建立'}
@@ -1093,7 +1151,7 @@ function QuickAddModal({ user, onClose, onSaved, onUseAI, toast }) {
 
 // ── Edit Habit Modal (rename/re-scope an existing habit) ──
 // pet: this habit's pet row (or null) — only used to soften the "already spirit tier" hint.
-function EditHabitModal({ habit, pet, onClose, onSaved, toast }) {
+function EditHabitModal({ habit, pet, goalOptions, onClose, onSaved, toast }) {
   const orig = parseDesc(habit.description);
   const origFreqType = habit.frequency?.type === 'weekly' ? 'weekly' : 'daily';
   const [title, setTitle] = useState(habit.title);
@@ -1101,6 +1159,7 @@ function EditHabitModal({ habit, pet, onClose, onSaved, toast }) {
   const [times, setTimes] = useState(habit.frequency?.times || 3);
   const [difficulty, setDifficulty] = useState(habit.difficulty);
   const [desc, setDesc] = useState(orig.desc);
+  const [goalLabel, setGoalLabel] = useState(habit.goal_label || null);
   const [busy, setBusy] = useState(false);
 
   const freqChanged = freqType !== origFreqType;
@@ -1121,6 +1180,7 @@ function EditHabitModal({ habit, pet, onClose, onSaved, toast }) {
         difficulty,
         fund_per_day: diffFund(difficulty),
         frequency: freqType === 'weekly' ? { type: 'weekly', times } : { type: 'daily' },
+        goal_label: goalLabel || null,
       });
       await onSaved();
       onClose();
@@ -1174,8 +1234,12 @@ function EditHabitModal({ habit, pet, onClose, onSaved, toast }) {
         )}
 
         <label style={S.label}>描述（選填）</label>
-        <input style={{ ...S.input, marginTop: 4, marginBottom: 20 }}
+        <input style={{ ...S.input, marginTop: 4 }}
           value={desc} onChange={e => setDesc(e.target.value)} placeholder="一行說明，例如：起床後先喝一杯水" />
+
+        <div style={{ marginBottom: 20 }}>
+          <GoalPicker value={goalLabel} options={goalOptions} onChange={setGoalLabel} />
+        </div>
 
         <div style={{ display: 'flex', gap: 10 }}>
           <button style={{ ...S.btn('secondary'), flex: 1, justifyContent: 'center' }} onClick={onClose} disabled={busy}>取消</button>
@@ -1644,6 +1708,14 @@ function MainApp({ user, toast, onSignOut }) {
   const [mourn, setMourn] = useState([]);               // [{name, days, habit}] 哀悼 modal
   const petSyncing = useRef(false);
   const [editHabit, setEditHabit] = useState(null); // 目前編輯中的習慣 object | null
+  const [deleteTarget, setDeleteTarget] = useState(null); // 待永久刪除的（已暫停）習慣 object | null
+
+  // 目標清單＝onboarding 填的 goals ∪ 所有習慣目前的 goal_label，去重去空值。
+  // 不依賴 onboarding：快速新增/問卷建立的使用者也能在 GoalPicker 看到並新增目標。
+  const goalOptions = Array.from(new Set([
+    ...((user.values_answers?.goals?.map(g => g.text)) ?? []),
+    ...habits.map(h => h.goal_label),
+  ].filter(Boolean)));
 
   const groupByGoal = (items) => {
     const groups = {};
@@ -1901,6 +1973,23 @@ function MainApp({ user, toast, onSignOut }) {
   const resumeHabit = async (id) => {
     if (habits.length >= 5) { setShowCapWarning(true); return; }
     try { await supa.patch('habits', `id=eq.${id}`, { is_active: true }); await load(); toast('已恢復 🌱'); } catch { toast('恢復失敗'); }
+  };
+
+  // 真正刪除：只對已暫停的習慣開放（呼叫端只在暫停區塊放這個按鈕）。
+  // 順序：checkins 先刪 → habits 再刪。pets 靠資料庫 FK ON DELETE CASCADE 自動清掉，
+  // 不在這裡手動碰 pets 資料表——即使 pets.sql 還沒在某個環境執行過，
+  // 也不會因為我們呼叫了不存在的資料表而 crash（load() 對 pets 的讀取本來就有 try/catch 保護）。
+  const deleteHabitPermanently = async (habit) => {
+    try {
+      await supa.del('checkins', `habit_id=eq.${habit.id}`);
+      await supa.del('habits', `id=eq.${habit.id}`);
+      await load();
+      setDeleteTarget(null);
+      toast('已永久刪除');
+    } catch (e) {
+      console.error('permanent delete failed:', e);
+      toast('刪除失敗');
+    }
   };
 
   const enableChainMode = async (habitId) => {
@@ -2261,7 +2350,6 @@ function MainApp({ user, toast, onSignOut }) {
               ? checkins.filter(c => c.habit_id === h.id && c.checked_date > h.chain_broken_at)
               : checkins.filter(c => c.habit_id === h.id);
             const total = lifetimeTotal; // keep for 📅 累計 display (lifetime)
-            const userGoals = (user.values_answers?.goals || []).filter(g => g.text?.trim());
             return (
               <div key={h.id} className="cozy-card" style={S.card}>
                 <div style={{ ...S.row, marginBottom: 10 }}>
@@ -2307,21 +2395,7 @@ function MainApp({ user, toast, onSignOut }) {
                     )}
                   </div>
                 )}
-                {userGoals.length > 0 && (
-                  <div style={{ marginTop: 12 }}>
-                    <label style={S.label}>歸屬目標</label>
-                    <select
-                      style={{ ...S.input, marginTop: 4 }}
-                      value={h.goal_label || ''}
-                      onChange={e => saveGoalLabel(h.id, e.target.value)}
-                    >
-                      <option value="">（未分組）</option>
-                      {userGoals.map(g => (
-                        <option key={g.text} value={g.text}>{g.text}</option>
-                      ))}
-                    </select>
-                  </div>
-                )}
+                <GoalPicker value={h.goal_label} options={goalOptions} onChange={val => saveGoalLabel(h.id, val)} />
               </div>
             );
           })}
@@ -2346,7 +2420,15 @@ function MainApp({ user, toast, onSignOut }) {
                     <div style={{ fontWeight: 500, fontSize: 15 }}>{h.title}</div>
                     <div style={{ ...S.muted, fontSize: 12, marginTop: 4 }}>📅 累計 {total} 次</div>
                   </div>
-                  <button style={{ ...S.btn('secondary'), padding: '7px 14px', fontSize: 12 }} onClick={() => resumeHabit(h.id)}>▶ 恢復</button>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+                    <button style={{ ...S.btn('secondary'), padding: '7px 14px', fontSize: 12 }} onClick={() => resumeHabit(h.id)}>▶ 恢復</button>
+                    <button
+                      onClick={() => setDeleteTarget(h)}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#A08B7A', fontSize: 11, textDecoration: 'underline', padding: '2px 4px' }}
+                    >
+                      🗑️ 永久刪除
+                    </button>
+                  </div>
                 </div>
               </div>
             );
@@ -2736,6 +2818,7 @@ function MainApp({ user, toast, onSignOut }) {
       {modal === 'quickadd' && (
         <QuickAddModal
           user={user}
+          goalOptions={goalOptions}
           onClose={() => setModal(null)}
           onSaved={load}
           onUseAI={() => setModal('add')}
@@ -2758,10 +2841,36 @@ function MainApp({ user, toast, onSignOut }) {
         <EditHabitModal
           habit={editHabit}
           pet={petOf(editHabit.id)}
+          goalOptions={goalOptions}
           onClose={() => setEditHabit(null)}
           onSaved={load}
           toast={toast}
         />
+      )}
+
+      {/* Permanent Delete Confirm Modal — only reachable from the paused-habits list */}
+      {deleteTarget && (
+        <div style={S.modalBg} onClick={e => e.target === e.currentTarget && setDeleteTarget(null)}>
+          <div style={S.modal}>
+            <div style={{ width: 40, height: 4, background: '#EADFCF', borderRadius: 2, margin: '0 auto 24px' }} />
+            <div style={{ ...S.h2, marginBottom: 14 }}>永久刪除「{deleteTarget.title}」？</div>
+            <ul style={{ fontSize: 13, color: '#7A6552', lineHeight: 1.9, marginBottom: 10, paddingLeft: 20 }}>
+              <li>這個習慣的 {checkins.filter(c => c.habit_id === deleteTarget.id).length} 筆打卡紀錄會一起消失</li>
+              <li>牠的寵物與回憶相簿也會消失</li>
+              <li>這個動作無法復原</li>
+            </ul>
+            <p style={{ ...S.muted, fontSize: 12, marginBottom: 22 }}>如果只是暫時不做，用「暫停」就好。</p>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button style={{ ...S.btn('primary'), flex: 1, justifyContent: 'center' }} onClick={() => setDeleteTarget(null)}>取消</button>
+              <button
+                style={{ ...S.btn('secondary'), flex: 1, justifyContent: 'center', color: C.coralDeep, borderColor: C.coralDeep }}
+                onClick={() => deleteHabitPermanently(deleteTarget)}
+              >
+                確定刪除
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Donate Modal */}
