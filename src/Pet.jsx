@@ -136,42 +136,49 @@ export const petXp = (days, giftLog = [], mult = 1, xpBase = 0) =>
   Math.floor(days * mult) + (Number(xpBase) || 0) +
   giftLog.reduce((s, g) => s + (Number(g.rarity) || 0) * 5, 0);
 
-// 各階門檻
+// 各階門檻：xp + 累計投入金幣（coins_spent）+ 高稀有度禮物「份數」（不看平均，只看有沒有給過好東西）
 export const TIER_REQ = {
-  cute: { xp: 60, gifts: 3, avg: 0 },
-  rare: { xp: 150, gifts: 8, avg: 2.0 },
-  spirit: { xp: 300, gifts: 15, avg: 3.0 },
+  cute: { xp: 60, coins: 100 },
+  rare: { xp: 150, coins: 400, highGifts: 3, highRarity: 2 },
+  spirit: { xp: 300, coins: 1000, highGifts: 3, highRarity: 4 },
 };
 
+// 依最低稀有度門檻，數出禮物紀錄裡有幾份達標（不是平均，只是計數）
+function countHighRarity(giftLog, minRarity) {
+  return giftLog.reduce((n, g) => n + ((Number(g.rarity) || 0) >= minRarity ? 1 : 0), 0);
+}
+
 // 進化判定：只升不降；精靈種需要 difficulty !== 'easy'（輕鬆習慣最高到保育類）
-export function evolveTier(current, xp, giftLog = [], difficulty = 'medium') {
-  const n = giftLog.length;
-  const avg = n ? giftLog.reduce((s, g) => s + (Number(g.rarity) || 0), 0) / n : 0;
+export function evolveTier(current, xp, giftLog = [], difficulty = 'medium', coinsSpent = 0) {
+  const coins = Number(coinsSpent) || 0;
   let t = 'insect';
-  if (xp >= TIER_REQ.cute.xp && n >= TIER_REQ.cute.gifts) t = 'cute';
-  if (xp >= TIER_REQ.rare.xp && n >= TIER_REQ.rare.gifts && avg >= TIER_REQ.rare.avg) t = 'rare';
-  if (xp >= TIER_REQ.spirit.xp && n >= TIER_REQ.spirit.gifts && avg >= TIER_REQ.spirit.avg && difficulty !== 'easy') t = 'spirit';
+  if (xp >= TIER_REQ.cute.xp && coins >= TIER_REQ.cute.coins) t = 'cute';
+  if (xp >= TIER_REQ.rare.xp && coins >= TIER_REQ.rare.coins
+    && countHighRarity(giftLog, TIER_REQ.rare.highRarity) >= TIER_REQ.rare.highGifts) t = 'rare';
+  if (xp >= TIER_REQ.spirit.xp && coins >= TIER_REQ.spirit.coins
+    && countHighRarity(giftLog, TIER_REQ.spirit.highRarity) >= TIER_REQ.spirit.highGifts
+    && difficulty !== 'easy') t = 'spirit';
   const cur = current && current !== 'egg' ? current : 'insect';
   return TIER_ORDER.indexOf(t) > TIER_ORDER.indexOf(cur) ? t : cur;
 }
 
 // 下一階還差什麼（給寵物卡的進度提示）
-export function nextTierGoal(current, xp, giftLog = [], difficulty = 'medium') {
+export function nextTierGoal(current, xp, giftLog = [], difficulty = 'medium', coinsSpent = 0) {
   const order = ['insect', 'cute', 'rare', 'spirit'];
   const idx = order.indexOf(current === 'egg' || !current ? 'insect' : current);
   if (idx < 0 || idx >= order.length - 1) return null;          // 已是精靈
   const next = order[idx + 1];
   if (next === 'spirit' && difficulty === 'easy') return { capped: true };
   const req = TIER_REQ[next];
-  const n = giftLog.length;
-  const avg = n ? giftLog.reduce((s, g) => s + (Number(g.rarity) || 0), 0) / n : 0;
+  const coins = Number(coinsSpent) || 0;
+  const highCount = req.highRarity ? countHighRarity(giftLog, req.highRarity) : 0;
   return {
     tier: next,
     label: TIER_LABEL[next],
     needXp: Math.max(0, req.xp - xp),
-    needGifts: Math.max(0, req.gifts - n),
-    needAvg: avg >= req.avg ? 0 : req.avg,
-    avg,
+    needCoins: Math.max(0, req.coins - coins),
+    needHighGifts: req.highGifts ? Math.max(0, req.highGifts - highCount) : 0,
+    highRarity: req.highRarity || null,
   };
 }
 

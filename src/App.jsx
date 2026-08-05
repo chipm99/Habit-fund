@@ -5,7 +5,7 @@ import CheckinCelebration from './CheckinCelebration.jsx';
 import {
   Pet, Egg, GIFTS, HATCH_DAYS, STAGE_LABEL, TIER_LABEL,
   speciesLabel, pickSpecies, stageIndex, petXp, evolveTier, nextTierGoal,
-  isoWeek, nextMondayLabel, hueFromId, patternFromId,
+  isoWeek, hueFromId, patternFromId,
   diffMult, petHealth, HEALTH_LABEL,
 } from './Pet.jsx';
 
@@ -1910,20 +1910,20 @@ function MainApp({ user, toast, onSignOut }) {
 
   useEffect(() => { syncPets(); }, [syncPets]);
 
-  // 餵食：每隻每週限一次（ISO 週），費用從全域寵物幣扣、記在被餵的那隻
+  // 餵食：不限次數，只受全域寵物幣餘額限制；煞車改為「累計投入金幣」推動進化門檻
   const feedPet = async (giftKey) => {
     const h = habits.find(x => x.id === giftHabitId);
     const p = h ? petOf(h.id) : null;
     const gift = GIFTS.find(g => g.key === giftKey);
     if (!h || !p || !gift) return;
     const log = Array.isArray(p.gift_log) ? p.gift_log : [];
-    if (log.some(g => g.week === isoWeek())) { toast('本週已經餵過了，下週一再來 🍃'); return; }
     if (totalPetCoins < gift.cost) { toast('寵物幣不夠，再多打幾天卡吧 🌱'); return; }
     const newLog = [...log, { week: isoWeek(), gift: gift.key, rarity: gift.rarity, cost: gift.cost, at: new Date().toISOString() }];
+    const newCoinsSpent = (Number(p.coins_spent) || 0) + gift.cost;
     const xp = petXp(petDays(h.id), newLog, diffMult(h.difficulty), p.xp_base || 0);
-    const nextTier = evolveTier(p.species_tier, xp, newLog, h.difficulty);
+    const nextTier = evolveTier(p.species_tier, xp, newLog, h.difficulty, newCoinsSpent);
     const evolved = nextTier !== p.species_tier;
-    const patch = { gift_log: newLog, xp, coins_spent: (Number(p.coins_spent) || 0) + gift.cost };
+    const patch = { gift_log: newLog, xp, coins_spent: newCoinsSpent };
     if (evolved) { patch.species_tier = nextTier; patch.species_key = pickSpecies(nextTier, p.hue); }
     try {
       await supa.patch('pets', `id=eq.${p.id}`, patch);
@@ -2191,11 +2191,11 @@ function MainApp({ user, toast, onSignOut }) {
         const hatched = !!p.hatched_at && p.species_tier !== 'egg';
         const daysLeft = Math.max(0, HATCH_DAYS - days);
         const xp = petXpOf(h, p);
-        const fed = log.some(g => g.week === isoWeek());
         const coins = petCoins(h);
+        const coinsSpent = Number(p.coins_spent) || 0;
         const stage = stageIndex(days);
         const health = hatched ? petHealthOf(h) : 'ok';
-        const goal = hatched ? nextTierGoal(p.species_tier, xp, log, h.difficulty) : null;
+        const goal = hatched ? nextTierGoal(p.species_tier, xp, log, h.difficulty, coinsSpent) : null;
         return (
           <div key={h.id} className="cozy-card" style={{ ...S.card, textAlign: 'center', paddingTop: 18 }}>
             <div style={{ display: 'flex', justifyContent: 'center' }}>
@@ -2250,8 +2250,8 @@ function MainApp({ user, toast, onSignOut }) {
                       ? '輕鬆難度最高可達保育類；想養出精靈種，把習慣難度調到適中以上 ✨'
                       : `距離「${goal.label}」：${[
                           goal.needXp > 0 ? `xp 還差 ${goal.needXp}` : null,
-                          goal.needGifts > 0 ? `還差 ${goal.needGifts} 次餵食` : null,
-                          goal.needAvg > 0 ? `平均稀有度需 ${goal.needAvg.toFixed(1)}（目前 ${goal.avg.toFixed(1)}）` : null,
+                          goal.needCoins > 0 ? `投入金幣還差 ${goal.needCoins}` : null,
+                          goal.needHighGifts > 0 ? `還需 ${goal.needHighGifts} 份稀有度 ≥${goal.highRarity} 的禮物` : null,
                         ].filter(Boolean).join('、') || '條件已達成，下次餵食就會進化 🎉'}`}
                   </div>
                 )}
@@ -2262,14 +2262,14 @@ function MainApp({ user, toast, onSignOut }) {
               <span style={{ fontSize: 13, color: C.honey, fontWeight: 600 }}>🪙 {coins}</span>
               <button
                 style={{
-                  ...S.btn(hatched && !fed ? 'primary' : 'secondary'),
+                  ...S.btn(hatched ? 'primary' : 'secondary'),
                   padding: '9px 18px', fontSize: 13,
-                  opacity: hatched && !fed ? 1 : 0.55,
-                  cursor: hatched && !fed ? 'pointer' : 'default',
+                  opacity: hatched ? 1 : 0.55,
+                  cursor: hatched ? 'pointer' : 'default',
                 }}
-                onClick={() => { if (hatched && !fed) setGiftHabitId(h.id); }}
+                onClick={() => { if (hatched) setGiftHabitId(h.id); }}
               >
-                {!hatched ? '🥚 孵化後才能餵食' : fed ? `🍃 本週已餵食（${nextMondayLabel()} 開放）` : '🎁 餵食'}
+                {!hatched ? '🥚 孵化後才能餵食' : '🎁 餵食'}
               </button>
             </div>
           </div>
@@ -2685,13 +2685,11 @@ function MainApp({ user, toast, onSignOut }) {
         </Modal>
       )}
 
-      {/* 禮物商店（每隻每週限兌一次） */}
+      {/* 禮物商店（不限次數，只受寵物幣餘額限制） */}
       {giftHabitId && (() => {
         const h = habits.find(x => x.id === giftHabitId);
         const p = h ? petOf(h.id) : null;
         if (!h || !p) return null;
-        const log = Array.isArray(p.gift_log) ? p.gift_log : [];
-        const fed = log.some(g => g.week === isoWeek());
         return (
           <Modal open title="🎁 禮物商店" onClose={() => setGiftHabitId(null)}>
             <div style={{ ...S.row, marginBottom: 16 }}>
@@ -2706,39 +2704,31 @@ function MainApp({ user, toast, onSignOut }) {
               </div>
             </div>
 
-            {fed ? (
-              <div className="cozy-card" style={{ ...S.card, textAlign: 'center', background: '#E6F2EB' }}>
-                <div style={{ fontSize: 30, marginBottom: 8 }}>🍃</div>
-                <div style={{ fontWeight: 600, marginBottom: 4 }}>本週已餵食</div>
-                <p style={{ ...S.muted, fontSize: 13 }}>下週一（{nextMondayLabel()}）開放，讓牠好好消化 ✨</p>
-              </div>
-            ) : (
-              GIFTS.map(g => {
-                const afford = totalPetCoins >= g.cost;
-                return (
-                  <button
-                    key={g.key}
-                    onClick={() => afford && feedPet(g.key)}
-                    style={{
-                      width: '100%', display: 'flex', alignItems: 'center', gap: 14, textAlign: 'left',
-                      background: C.paper, border: `1.5px solid ${C.border}`, borderRadius: '17px 14px 18px 13px',
-                      padding: '12px 16px', marginBottom: 10, cursor: afford ? 'pointer' : 'default',
-                      opacity: afford ? 1 : 0.42, fontFamily: 'inherit', color: C.ink,
-                      boxShadow: afford ? '2px 3px 0 #EFE1CE' : 'none',
-                    }}
-                  >
-                    <span style={{ fontSize: 26, flexShrink: 0 }}>{g.emoji}</span>
-                    <span style={{ flex: 1, minWidth: 0 }}>
-                      <span style={{ display: 'block', fontWeight: 600, fontSize: 15 }}>{g.name}</span>
-                      <span style={{ display: 'block', fontSize: 12, color: C.lemonDeep }}>{'★'.repeat(g.rarity)}<span style={{ color: C.line }}>{'★'.repeat(5 - g.rarity)}</span></span>
-                    </span>
-                    <span style={{ color: afford ? C.honey : C.muted, fontWeight: 700, fontSize: 14, flexShrink: 0 }}>🪙 {g.cost}</span>
-                  </button>
-                );
-              })
-            )}
+            {GIFTS.map(g => {
+              const afford = totalPetCoins >= g.cost;
+              return (
+                <button
+                  key={g.key}
+                  onClick={() => afford && feedPet(g.key)}
+                  style={{
+                    width: '100%', display: 'flex', alignItems: 'center', gap: 14, textAlign: 'left',
+                    background: C.paper, border: `1.5px solid ${C.border}`, borderRadius: '17px 14px 18px 13px',
+                    padding: '12px 16px', marginBottom: 10, cursor: afford ? 'pointer' : 'default',
+                    opacity: afford ? 1 : 0.42, fontFamily: 'inherit', color: C.ink,
+                    boxShadow: afford ? '2px 3px 0 #EFE1CE' : 'none',
+                  }}
+                >
+                  <span style={{ fontSize: 26, flexShrink: 0 }}>{g.emoji}</span>
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <span style={{ display: 'block', fontWeight: 600, fontSize: 15 }}>{g.name}</span>
+                    <span style={{ display: 'block', fontSize: 12, color: C.lemonDeep }}>{'★'.repeat(g.rarity)}<span style={{ color: C.line }}>{'★'.repeat(5 - g.rarity)}</span></span>
+                  </span>
+                  <span style={{ color: afford ? C.honey : C.muted, fontWeight: 700, fontSize: 14, flexShrink: 0 }}>🪙 {g.cost}</span>
+                </button>
+              );
+            })}
             <p style={{ ...S.muted, fontSize: 11, textAlign: 'center', marginTop: 6, lineHeight: 1.7 }}>
-              寵物幣由打卡累積，與捐款基金分開計算，餵食不會減少你的捐款餘額。
+              寵物幣由打卡累積，與捐款基金分開計算，餵食不會減少你的捐款餘額。可以一天餵好幾次，只要寵物幣夠。
             </p>
           </Modal>
         );
