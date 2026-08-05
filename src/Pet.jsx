@@ -1,18 +1,16 @@
-import React, { useEffect, useId, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
 /**
- * Pet.jsx — 手繪電子寵物（蛋 → 孵化 → 成長 → 進化）
+ * Pet.jsx — 像素電子雞（蛋 → 孵化 → 成長 → 進化）
  * ────────────────────────────────────────────────────────────
- * 美術原則：
- *   · 全部內嵌 SVG 手繪，無外部圖檔、無 emoji 主體、無像素風
- *   · 沿用 FluidBackground 的 boiling-line squigglevision：三組
- *     feTurbulence + feDisplacementMap 濾鏡以 ~190ms 輪播，線條像停格動畫微微抖動
- *   · 線條蠟筆質感、圓潤收尾、左右不對稱（眼睛不同高、輪廓有機起伏）
- *   · 顏色由 pet.hue 生成，低飽和柔和，在 cream #FDFBF7 上好看
- *   · 動態只有「極緩慢呼吸」與「偶爾眨眼」，禁止快速彈跳
+ * 美術原則（詳細規格見 src/PET_PIXEL_SPEC.md）：
+ *   · 20×20 像素網格，SVG <rect> + shapeRendering="crispEdges"，方塊感明確
+ *   · 每隻 4-6 色：A 主色 / B 暗部 / C 亮部 / D 深色輪廓 / E 白 / S 眼睛高光 / F,G 物種重點色
+ *   · 逐格動畫 2.5fps（400ms），不使用 CSS transition 補間
+ *   · 無反鋸齒、無漸層、無 boiling-line 濾鏡（會把方塊糊掉）
  *
- * 對外：
- *   <Pet pet={petRow} days={n} size={px} />      // 未孵化自動改畫蛋
+ * 對外（與 App.jsx 相容，介面未變）：
+ *   <Pet pet={petRow} days={n} size={px} health={'ok'|'hungry'|'weak'|'dead'} />
  *   <Egg hue={} pattern={} daysLeft={} size={} />
  *   以及成長／進化／禮物的純資料函式（見下方 export）
  */
@@ -22,48 +20,31 @@ const REDUCED =
   window.matchMedia &&
   window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-// ── 共用 boiling 幀（一個 interval 驅動所有寵物，避免每隻各開一顆 timer）──
-let boilFrame = 0;
-let boilTimer = null;
-const boilSubs = new Set();
-function subscribeBoil(fn) {
-  boilSubs.add(fn);
-  if (!boilTimer && !REDUCED) {
-    boilTimer = setInterval(() => {
-      boilFrame = (boilFrame + 1) % 3;
-      boilSubs.forEach(f => f(boilFrame));
-    }, 190); // ≈5.3fps，與 FluidBackground 同步
+// ══════════════════════════════════════════════════════════
+//  逐格動畫時脈：全域單一 interval，所有寵物共用（省電）
+//  400ms = 2.5fps。小尺寸／虛弱狀態再除以 2 → 800ms（1.25fps）
+// ══════════════════════════════════════════════════════════
+const FRAME_MS = 400;
+let tickN = 0;
+let tickTimer = null;
+const tickSubs = new Set();
+function subscribeTick(fn) {
+  tickSubs.add(fn);
+  if (!tickTimer && !REDUCED) {
+    tickTimer = setInterval(() => {
+      tickN += 1;
+      tickSubs.forEach((f) => f(tickN));
+    }, FRAME_MS);
   }
   return () => {
-    boilSubs.delete(fn);
-    if (boilSubs.size === 0 && boilTimer) { clearInterval(boilTimer); boilTimer = null; }
+    tickSubs.delete(fn);
+    if (tickSubs.size === 0 && tickTimer) { clearInterval(tickTimer); tickTimer = null; }
   };
 }
-function useBoil() {
-  const [f, setF] = useState(boilFrame);
-  useEffect(() => subscribeBoil(setF), []);
-  return REDUCED ? 0 : f;
-}
-
-// ── 一次性注入呼吸／眨眼 keyframes ──
-const STYLE_ID = 'pet-anim-styles';
-function ensureStyles() {
-  if (typeof document === 'undefined' || document.getElementById(STYLE_ID)) return;
-  const el = document.createElement('style');
-  el.id = STYLE_ID;
-  el.textContent = `
-@keyframes petBreathe{0%,100%{transform:scale(1)}50%{transform:scale(1.03)}}
-@keyframes petBlink{0%,90%,100%{transform:scaleY(1)}94%{transform:scaleY(0.1)}}
-@keyframes petFloat{0%,100%{transform:translateY(0px)}50%{transform:translateY(-2.5px)}}
-@keyframes eggWobble{0%,100%{transform:rotate(-1.4deg) scale(1)}50%{transform:rotate(1.4deg) scale(1.025)}}
-.pet-breathe{transform-box:fill-box;transform-origin:50% 92%;animation:petBreathe 3.6s ease-in-out infinite}
-.pet-float{transform-box:fill-box;transform-origin:50% 50%;animation:petFloat 4.2s ease-in-out infinite}
-.pet-eyes{transform-box:fill-box;transform-origin:50% 50%;animation:petBlink 5.8s ease-in-out infinite}
-.egg-wobble{transform-box:fill-box;transform-origin:50% 92%;animation:eggWobble 4s ease-in-out infinite}
-.pet-slow{animation-duration:7.5s}
-@media (prefers-reduced-motion: reduce){.pet-breathe,.pet-float,.pet-eyes,.egg-wobble{animation:none}}
-`;
-  document.head.appendChild(el);
+function useTick() {
+  const [t, setT] = useState(tickN);
+  useEffect(() => subscribeTick(setT), []);
+  return REDUCED ? 0 : t;   // prefers-reduced-motion → 永遠停在 frame 0
 }
 
 // ══════════════════════════════════════════════════════════
@@ -72,6 +53,7 @@ function ensureStyles() {
 
 export const PATTERNS = ['dots', 'stripes', 'speckle', 'swirl', 'plain'];
 
+// 舊介面保留（其他模組可能引用）
 export function petPalette(hue) {
   const h = ((hue % 360) + 360) % 360;
   return {
@@ -79,18 +61,41 @@ export function petPalette(hue) {
     stroke: `hsl(${h},45%,62%)`,
     belly: `hsl(${(h + 30) % 360},60%,88%)`,
     deep: `hsl(${h},40%,52%)`,
-    dark: `hsl(${h},26%,40%)`, // 角、甲殼等需要「硬」質感的深色
+    dark: `hsl(${h},26%,40%)`,
+  };
+}
+
+/**
+ * 像素色盤：字母 → 顏色。每隻生物最多用到 6 色。
+ *   A 主色 / B 暗部 / C 亮部 / D 輪廓 / E 白 / S 眼睛高光（眨眼時變 D）/ F,G 物種重點色
+ * health: 'hungry' 降飽和、'weak'/'dead' 幾乎去彩且重點色併入暗部
+ */
+export function pixelPalette(hue, health = 'ok') {
+  const h = ((hue % 360) + 360) % 360;
+  const k = health === 'weak' || health === 'dead' ? 0.16 : health === 'hungry' ? 0.55 : 1;
+  const s = (v) => Math.round(v * k);
+  return {
+    A: `hsl(${h},${s(58)}%,${health === 'weak' || health === 'dead' ? 64 : 68}%)`,
+    B: `hsl(${h},${s(46)}%,48%)`,
+    C: `hsl(${h},${s(62)}%,86%)`,
+    D: `hsl(${h},${s(40)}%,${health === 'weak' || health === 'dead' ? 32 : 25}%)`,
+    E: '#FFFDF9',
+    S: '#FFFDF9',
   };
 }
 
 export const TIER_ORDER = ['egg', 'insect', 'cute', 'rare', 'spirit'];
 export const TIER_LABEL = { egg: '蛋', insect: '稀有昆蟲', cute: '可愛動物', rare: '保育動物', spirit: '精靈' };
 
-// 四階種族表（每階 4 種，剪影各自可辨識）
+// 四階種族表（species_key 一旦寫進 DB 就不可刪改）
 export const SPECIES = {
   insect: { firefly: '螢火蟲', rhinobeetle: '獨角仙', swallowtail: '寬尾鳳蝶', damselfly: '豆娘' },
   cute: { cat: '貓', dog: '狗', seal: '海豹', rabbit: '兔子' },
-  rare: { blackbear: '臺灣黑熊', leopardcat: '石虎', pangolin: '穿山甲', otter: '水獺' },
+  rare: {
+    blackbear: '臺灣黑熊', leopardcat: '石虎', pangolin: '穿山甲', otter: '水獺',
+    redpanda: '小熊貓', fennec: '耳廓狐', axolotl: '墨西哥鈍口螈', seaotter: '海獺',
+    bluedragon: '藍龍海蛞蝓', shoebill: '鯨頭鸛', sawfish: '鋸鰩',
+  },
   spirit: { sprite_moss: '苔球精靈', sprite_cloud: '雲朵精靈', sprite_flame: '火種精靈', sprite_star: '星塵精靈' },
 };
 
@@ -103,11 +108,15 @@ export function pickSpecies(tier, hue) {
   return keys[Math.abs(Math.round(hue)) % keys.length];
 }
 
-// 成長
-export const HATCH_DAYS = 14;
+// ── 成長 ────────────────────────────────────────────────
+export const HATCH_AT = 7;             // 打卡 7 次孵化（唯一真相來源）
+export const HATCH_DAYS = HATCH_AT;    // 舊名保留：App.jsx 匯入的是這個
+export const CRACK1_AT = 5;            // 第 5 次出現第一道裂痕
+export const CRACK2_AT = 6;            // 第 6 次出現第二道裂痕
 export const STAGE_LABEL = ['幼', '中', '大', '成熟'];
-const STAGE_SCALE = [0.76, 0.88, 1.0, 1.1];
 export const stageIndex = (days) => (days >= 120 ? 3 : days >= 60 ? 2 : days >= 30 ? 1 : 0);
+// 成長階段用「viewBox 留白」控制大小，維持整格像素不變形
+const STAGE_PAD = [3.2, 1.8, 0.6, 0];
 
 // 禮物（價格從全域寵物幣扣，與捐款基金完全分離）
 export const GIFTS = [
@@ -213,585 +222,967 @@ export const hueFromId = (id) => hashStr(id) % 360;
 export const patternFromId = (id) => PATTERNS[(hashStr(id) >>> 9) % PATTERNS.length];
 
 // ══════════════════════════════════════════════════════════
-//  美術：花紋、濾鏡、五官
+//  像素引擎
+//  · GRID = 20：所有圖 20×20；每行 20 字元（不足自動補 '.'）
+//  · '.' = 透明；其餘字母查 palette
+//  · 同色水平連續像素合併成一個 <rect>（run-length），控制節點數
 // ══════════════════════════════════════════════════════════
+export const GRID = 20;
 
-const SPECKLES = [
-  [34, 44], [58, 40], [46, 58], [66, 56], [30, 62], [52, 70], [70, 70], [40, 34],
-  [62, 66], [26, 52], [50, 48], [74, 46], [36, 74], [56, 30], [44, 80], [68, 34],
-];
-
-function PatternMarks({ pattern, P }) {
-  if (!pattern || pattern === 'plain') return null;
-  const col = P.stroke;
-  if (pattern === 'dots') {
-    const out = [];
-    for (let r = 0; r < 6; r++) {
-      for (let c = 0; c < 6; c++) {
-        out.push(
-          <circle key={`${r}-${c}`} cx={10 + c * 17 + (r % 2 ? 8 : 0)} cy={10 + r * 16} r={3.3} fill={col} opacity={0.34} />
-        );
-      }
+function gridRects(grid, colors, keyPrefix) {
+  const out = [];
+  for (let y = 0; y < grid.length && y < GRID; y++) {
+    const row = grid[y] || '';
+    let x = 0;
+    while (x < row.length && x < GRID) {
+      const ch = row[x];
+      if (ch === '.' || ch === ' ') { x++; continue; }
+      let w = 1;
+      while (x + w < row.length && x + w < GRID && row[x + w] === ch) w++;
+      const fill = colors[ch];
+      if (fill) out.push(<rect key={`${keyPrefix}${x}-${y}`} x={x} y={y} width={w} height={1} fill={fill} />);
+      x += w;
     }
-    return <>{out}</>;
   }
-  if (pattern === 'stripes') {
-    return (
-      <>
-        {Array.from({ length: 11 }).map((_, i) => (
-          <path key={i} d={`M${-30 + i * 16} 110 L${20 + i * 16} -10`} stroke={col} strokeWidth={3.4} opacity={0.3} fill="none" strokeLinecap="round" />
-        ))}
-      </>
-    );
-  }
-  if (pattern === 'speckle') {
-    return (
-      <>
-        {SPECKLES.map(([x, y], i) => (
-          <circle key={i} cx={x} cy={y} r={i % 3 === 0 ? 2.2 : 1.5} fill={col} opacity={0.4} />
-        ))}
-      </>
-    );
-  }
-  // swirl
-  return (
-    <>
-      {[[36, 46], [66, 60], [46, 74]].map(([x, y], i) => (
-        <path
-          key={i}
-          d={`M${x} ${y} C${x - 8} ${y - 2} ${x - 8} ${y - 11} ${x} ${y - 11} C${x + 10} ${y - 11} ${x + 11} ${y + 2} ${x} ${y + 4} C${x - 13} ${y + 6} ${x - 14} ${y - 8} ${x - 6} ${y - 14}`}
-          stroke={col} strokeWidth={2.4} fill="none" opacity={0.35} strokeLinecap="round"
-        />
-      ))}
-    </>
-  );
+  return out;
 }
 
-function BoilDefs({ uid, scale = 1.8 }) {
-  return (
-    <defs>
-      {[0, 1, 2].map((s) => (
-        <filter key={s} id={`pboil-${uid}-${s}`} x="-25%" y="-25%" width="150%" height="150%">
-          <feTurbulence type="fractalNoise" baseFrequency="0.021" numOctaves="2" seed={s * 9 + 5} result="n" />
-          <feDisplacementMap in="SourceGraphic" in2="n" scale={REDUCED ? 0 : scale} xChannelSelector="R" yChannelSelector="G" />
-        </filter>
-      ))}
-    </defs>
-  );
-}
-
-// 肚子餓／虛弱時頭上的小水滴
-function Droplet({ x = 74, y = 20 }) {
-  return (
-    <path
-      d={`M${x} ${y} C${x + 5} ${y + 7} ${x + 5} ${y + 13} ${x} ${y + 13} C${x - 5} ${y + 13} ${x - 5} ${y + 7} ${x} ${y} Z`}
-      fill="#A5DEE4" stroke="#7FBCC4" strokeWidth="1.8" opacity="0.95"
-    />
-  );
-}
-
-// 一對不對稱的眼睛 + 淡淡的嘴；mood !== 'ok' 時眼神下垂並改成嘟嘴
-function Face({ eyes, P, blush, mood = 'ok' }) {
-  const { lx, ly, rx, ry, r = 3, mouth } = eyes;
-  const sad = mood === 'hungry' || mood === 'weak';
-  const cx = (lx + rx) / 2;
-  const my = Math.max(ly, ry) + 11;
-  if (sad) {
-    return (
-      <>
-        <g className="pet-eyes">
-          <circle cx={lx} cy={ly + 0.6} r={r * 0.85} fill="#4A3B31" />
-          <circle cx={rx} cy={ry + 0.6} r={r * 0.9} fill="#4A3B31" />
-        </g>
-        {/* 下垂的眼皮 */}
-        <path d={`M${lx - r - 2.5} ${ly + r * 0.3} C${lx - r * 0.4} ${ly - r * 1.5} ${lx + r * 0.6} ${ly - r * 1.3} ${lx + r + 1.5} ${ly - r * 0.9}`} stroke={P.deep} strokeWidth="2.3" fill="none" />
-        <path d={`M${rx + r + 2.5} ${ry + r * 0.3} C${rx + r * 0.4} ${ry - r * 1.5} ${rx - r * 0.6} ${ry - r * 1.3} ${rx - r - 1.5} ${ry - r * 0.9}`} stroke={P.deep} strokeWidth="2.3" fill="none" />
-        <path d={`M${cx - 5} ${my + 2} C${cx - 2} ${my - 2.5} ${cx + 2} ${my - 2.5} ${cx + 5} ${my + 2}`} stroke={P.deep} strokeWidth="2.2" fill="none" />
-      </>
-    );
-  }
-  return (
-    <>
-      {blush && (
-        <>
-          <ellipse cx={lx - 6} cy={ly + 7} rx={4.4} ry={2.8} fill="#F6B7A6" opacity={0.5} />
-          <ellipse cx={rx + 6} cy={ry + 7} rx={4.2} ry={2.6} fill="#F6B7A6" opacity={0.5} />
-        </>
-      )}
-      <g className="pet-eyes">
-        <circle cx={lx} cy={ly} r={r} fill="#4A3B31" />
-        <circle cx={rx} cy={ry} r={r * 1.1} fill="#4A3B31" />
-        <circle cx={lx + r * 0.35} cy={ly - r * 0.4} r={r * 0.3} fill="#FFFDF9" />
-        <circle cx={rx + r * 0.35} cy={ry - r * 0.4} r={r * 0.32} fill="#FFFDF9" />
-      </g>
-      {mouth && <path d={mouth} stroke={P.deep} strokeWidth={2.2} fill="none" strokeLinecap="round" />}
-    </>
-  );
-}
-
-// ══════════════════════════════════════════════════════════
-//  16 種剪影（每階 4 種）
-//  每個 shape function 回傳 { body, behind, front, eyes, float }
-//    body   = 主體 path（同時當花紋的 clip 形狀）
-//    behind = 畫在主體之下（翅膀、尾巴…）
-//    front  = 畫在主體之上（耳朵、角、斑紋…）
-// ══════════════════════════════════════════════════════════
-
-const wing = (d, P, op = 0.55, fill = '#FFFDF9') => <path d={d} fill={fill} fillOpacity={op} stroke={P.stroke} strokeWidth={2.4} />;
-
-const SHAPES = {
-  // ── 稀有昆蟲 ─────────────────────────────
-  firefly: (P) => ({
-    body: 'M50 40 C62 40 71 47 70 57 C69 68 61 77 50 77 C39 77 31 68 30 57 C29 47 38 40 50 40 Z',
-    behind: (
-      <>
-        {wing('M47 46 C34 25 15 21 9 32 C4 44 24 57 46 54 Z', P, 0.9, P.belly)}
-        {wing('M54 46 C67 23 86 22 91 33 C96 45 76 58 54 54 Z', P, 0.9, P.belly)}
-        <path d="M44 50 C33 44 22 38 14 33" stroke={P.stroke} strokeWidth="1.6" fill="none" opacity="0.7" />
-        <path d="M57 50 C68 43 79 37 87 34" stroke={P.stroke} strokeWidth="1.6" fill="none" opacity="0.7" />
-        <circle cx="50" cy="86" r="11" fill="#FBE790" opacity="0.28" />
-      </>
-    ),
-    front: (
-      <>
-        <path d="M44 40 C40 30 36 26 30 23" stroke={P.stroke} strokeWidth="2.6" fill="none" />
-        <path d="M57 40 C61 31 66 27 72 25" stroke={P.stroke} strokeWidth="2.6" fill="none" />
-        <circle cx="29" cy="22" r="2.2" fill={P.stroke} />
-        <circle cx="73" cy="24" r="2.2" fill={P.stroke} />
-        <circle cx="50" cy="84" r="7.5" fill="#FBE790" stroke="#E8C94F" strokeWidth="2.2" />
-      </>
-    ),
-    eyes: { lx: 43, ly: 55, rx: 58, ry: 54, r: 3, mouth: 'M47 63 C49 66 53 66 55 63' },
-  }),
-
-  rhinobeetle: (P) => ({
-    body: 'M50 40 C66 40 77 50 76 62 C75 74 64 81 50 81 C36 81 24 74 24 62 C24 50 34 40 50 40 Z',
-    behind: (
-      <>
-        {[[27, 55, 15, 49], [25, 64, 13, 64], [28, 72, 17, 78], [73, 54, 85, 48], [75, 63, 87, 63], [72, 72, 83, 78]].map(([a, b, c, d], i) => (
-          <path key={i} d={`M${a} ${b} L${c} ${d}`} stroke={P.stroke} strokeWidth="2.8" fill="none" />
-        ))}
-      </>
-    ),
-    front: (
-      <>
-        <path d="M50 43 C50 56 50 68 49 79" stroke={P.stroke} strokeWidth="2.4" fill="none" opacity="0.8" />
-        <path d="M51 41 C51 30 45 22 34 17" stroke={P.dark} strokeWidth="6.5" fill="none" />
-        <path d="M34 17 C41 17 45 20 47 25" stroke={P.dark} strokeWidth="5" fill="none" />
-        <path d="M46 26 C50 23 55 24 57 28" stroke={P.dark} strokeWidth="3.8" fill="none" />
-      </>
-    ),
-    eyes: { lx: 42, ly: 55, rx: 59, ry: 54, r: 2.9, mouth: 'M46 64 C49 67 53 67 56 64' },
-  }),
-
-  swallowtail: (P) => ({
-    body: 'M50 36 C54 36 57 42 56 55 C55 69 53 79 50 82 C47 79 45 69 44 55 C43 42 46 36 50 36 Z',
-    behind: (
-      <>
-        {wing('M46 47 C31 26 12 25 8 38 C4 51 22 61 46 59 Z', P, 0.7)}
-        {wing('M55 47 C70 25 89 26 93 39 C96 52 78 61 55 59 Z', P, 0.7)}
-        {wing('M47 61 C34 63 20 71 18 84 C27 88 41 84 49 72 Z', P, 0.7)}
-        {wing('M54 61 C67 63 81 71 83 84 C74 88 60 84 52 72 Z', P, 0.7)}
-        {[[26, 44], [74, 44], [30, 76], [70, 76]].map(([x, y], i) => (
-          <circle key={i} cx={x} cy={y} r="4" fill={P.main} stroke={P.stroke} strokeWidth="1.8" />
-        ))}
-      </>
-    ),
-    front: (
-      <>
-        <path d="M47 38 C42 28 36 23 29 21" stroke={P.stroke} strokeWidth="2.4" fill="none" />
-        <path d="M54 38 C59 28 65 23 72 22" stroke={P.stroke} strokeWidth="2.4" fill="none" />
-        <circle cx="28" cy="20" r="2.4" fill={P.stroke} />
-        <circle cx="73" cy="21" r="2.4" fill={P.stroke} />
-      </>
-    ),
-    eyes: { lx: 46, ly: 45, rx: 55, ry: 44, r: 2.3, mouth: null },
-  }),
-
-  damselfly: (P) => ({
-    body: 'M50 30 C55 30 58 37 56 47 C55 61 54 77 50 88 C46 77 45 61 44 47 C42 37 45 30 50 30 Z',
-    behind: (
-      <>
-        {wing('M48 41 C30 32 12 34 8 43 C11 51 30 53 48 47 Z', P)}
-        {wing('M53 41 C71 32 89 34 93 43 C90 51 71 53 53 47 Z', P)}
-        {wing('M48 55 C33 49 18 51 15 58 C18 65 33 66 48 61 Z', P)}
-        {wing('M53 55 C68 49 83 51 86 58 C83 65 68 66 53 61 Z', P)}
-      </>
-    ),
-    front: (
-      <>
-        <circle cx="50" cy="26" r="9.5" fill={P.main} stroke={P.stroke} strokeWidth="2.8" />
-        <path d="M47 70 C49 72 52 72 54 70" stroke={P.stroke} strokeWidth="2" fill="none" opacity="0.7" />
-        <path d="M47 79 C49 81 52 81 54 79" stroke={P.stroke} strokeWidth="2" fill="none" opacity="0.7" />
-      </>
-    ),
-    eyes: { lx: 46, ly: 25, rx: 54, ry: 24, r: 2.6, mouth: null },
-  }),
-
-  // ── 可愛動物 ─────────────────────────────
-  cat: (P) => ({
-    body: 'M50 32 C68 32 81 46 80 61 C79 77 66 85 50 85 C34 85 21 77 20 61 C19 46 32 32 50 32 Z',
-    behind: <path d="M77 80 C95 81 100 58 90 41" stroke={P.stroke} strokeWidth="3.6" fill="none" />,
-    front: (
-      <>
-        <path d="M31 41 C28 27 27 21 29 20 C34 24 41 30 45 35 Z" fill={P.main} stroke={P.stroke} strokeWidth="2.8" />
-        <path d="M70 40 C74 26 76 21 74 20 C68 25 61 30 57 35 Z" fill={P.main} stroke={P.stroke} strokeWidth="2.8" />
-        <path d="M33 38 C32 31 32 28 33 27 C36 30 39 33 41 36 Z" fill={P.belly} />
-        <path d="M68 37 C70 30 70 27 69 26 C66 29 63 32 61 35 Z" fill={P.belly} />
-        {[[24, 60, 12, 57], [24, 66, 12, 68], [76, 59, 88, 56], [76, 65, 88, 67]].map(([a, b, c, d], i) => (
-          <path key={i} d={`M${a} ${b} L${c} ${d}`} stroke={P.stroke} strokeWidth="1.8" fill="none" opacity="0.75" />
-        ))}
-        <path d="M46 62 L54 62 L50 66 Z" fill={P.deep} />
-      </>
-    ),
-    eyes: { lx: 40, ly: 55, rx: 61, ry: 54, r: 3.4, mouth: 'M44 69 C47 72 50 70 50 67 C50 70 53 72 56 69' },
-  }),
-
-  dog: (P) => ({
-    body: 'M50 32 C69 32 81 45 80 61 C79 77 66 86 50 86 C34 86 21 77 20 61 C19 45 31 32 50 32 Z',
-    behind: (
-      <>
-        <path d="M78 76 C93 74 99 58 91 44" stroke={P.stroke} strokeWidth="3.6" fill="none" />
-        <path d="M30 38 C18 41 13 58 20 69 C29 66 33 53 33 42 Z" fill={P.main} stroke={P.stroke} strokeWidth="2.8" />
-        <path d="M70 37 C82 41 87 57 80 68 C71 65 67 52 67 41 Z" fill={P.main} stroke={P.stroke} strokeWidth="2.8" />
-      </>
-    ),
-    front: (
-      <>
-        <ellipse cx="50" cy="68" rx="14" ry="10" fill={P.belly} stroke={P.stroke} strokeWidth="2.2" />
-        <ellipse cx="50" cy="63" rx="4.2" ry="3.2" fill={P.deep} />
-        <path d="M50 66 C50 71 46 73 42 71" stroke={P.deep} strokeWidth="2" fill="none" />
-        <path d="M50 66 C50 71 54 73 58 71" stroke={P.deep} strokeWidth="2" fill="none" />
-      </>
-    ),
-    eyes: { lx: 41, ly: 50, rx: 60, ry: 49, r: 3.3, mouth: null },
-  }),
-
-  seal: (P) => ({
-    body: 'M50 36 C71 36 85 48 84 62 C83 77 69 84 49 84 C29 84 16 76 16 62 C16 48 30 36 50 36 Z',
-    behind: (
-      <>
-        <path d="M22 74 C11 79 7 89 14 90 C23 89 29 82 31 75 Z" fill={P.main} stroke={P.stroke} strokeWidth="2.6" />
-        <path d="M78 73 C89 78 93 88 86 90 C77 89 71 82 69 74 Z" fill={P.main} stroke={P.stroke} strokeWidth="2.6" />
-      </>
-    ),
-    front: (
-      <>
-        <ellipse cx="50" cy="66" rx="13" ry="9" fill={P.belly} opacity="0.85" />
-        <ellipse cx="50" cy="63" rx="3.6" ry="2.8" fill={P.deep} />
-        <path d="M50 66 C50 70 46 72 43 70" stroke={P.deep} strokeWidth="1.9" fill="none" />
-        <path d="M50 66 C50 70 54 72 57 70" stroke={P.deep} strokeWidth="1.9" fill="none" />
-        {[[38, 64, 26, 61], [38, 69, 26, 71], [62, 63, 74, 60], [62, 68, 74, 70]].map(([a, b, c, d], i) => (
-          <path key={i} d={`M${a} ${b} L${c} ${d}`} stroke={P.stroke} strokeWidth="1.7" fill="none" opacity="0.7" />
-        ))}
-      </>
-    ),
-    eyes: { lx: 39, ly: 53, rx: 62, ry: 52, r: 4.2, mouth: null },
-  }),
-
-  rabbit: (P) => ({
-    body: 'M50 40 C67 40 77 52 76 67 C75 81 64 87 50 87 C36 87 25 81 24 67 C23 52 33 40 50 40 Z',
-    behind: (
-      <>
-        <circle cx="80" cy="79" r="7.5" fill={P.belly} stroke={P.stroke} strokeWidth="2.4" />
-        <path d="M40 44 C33 27 33 12 39 8 C46 13 46 29 44 44 Z" fill={P.main} stroke={P.stroke} strokeWidth="2.8" />
-        <path d="M60 43 C68 27 69 13 63 9 C56 14 55 29 56 43 Z" fill={P.main} stroke={P.stroke} strokeWidth="2.8" />
-        <path d="M40 40 C36 27 36 17 39 14 C43 18 43 30 42 40 Z" fill={P.belly} />
-        <path d="M59 39 C63 27 64 18 61 15 C57 19 57 30 57 39 Z" fill={P.belly} />
-      </>
-    ),
-    front: (
-      <>
-        <path d="M46 66 L54 66 L50 70 Z" fill={P.deep} />
-        <path d="M50 70 L50 74" stroke={P.deep} strokeWidth="2" fill="none" />
-      </>
-    ),
-    eyes: { lx: 40, ly: 60, rx: 61, ry: 59, r: 3.4, mouth: 'M43 75 C46 78 49 76 50 74 C51 76 54 78 57 75' },
-  }),
-
-  // ── 保育動物 ─────────────────────────────
-  blackbear: (P) => ({
-    body: 'M50 34 C71 34 83 48 82 64 C81 80 68 88 50 88 C32 88 19 80 18 64 C17 48 29 34 50 34 Z',
-    behind: (
-      <>
-        <circle cx="27" cy="36" r="9.5" fill={P.main} stroke={P.stroke} strokeWidth="2.8" />
-        <circle cx="73" cy="35" r="9.5" fill={P.main} stroke={P.stroke} strokeWidth="2.8" />
-      </>
-    ),
-    front: (
-      <>
-        {/* 胸前 V 白紋（臺灣黑熊的招牌） */}
-        <path d="M37 61 L50 82 L63 60" stroke="#FFFDF9" strokeWidth="5.5" fill="none" />
-        <ellipse cx="50" cy="59" rx="11.5" ry="8.5" fill={P.belly} stroke={P.stroke} strokeWidth="2" />
-        <ellipse cx="50" cy="55" rx="4" ry="3" fill={P.deep} />
-        <path d="M50 58 C50 62 47 63 45 62" stroke={P.deep} strokeWidth="1.9" fill="none" />
-        <path d="M50 58 C50 62 53 63 55 62" stroke={P.deep} strokeWidth="1.9" fill="none" />
-      </>
-    ),
-    eyes: { lx: 39, ly: 47, rx: 61, ry: 46, r: 3.1, mouth: null },
-  }),
-
-  leopardcat: (P) => ({
-    body: 'M50 32 C68 32 81 46 80 61 C79 77 66 85 50 85 C34 85 21 77 20 61 C19 46 32 32 50 32 Z',
-    behind: (
-      <>
-        <path d="M78 80 C96 81 101 58 91 41" stroke={P.stroke} strokeWidth="3.6" fill="none" />
-        {[[92, 68], [96, 57]].map(([x, y], i) => (
-          <circle key={i} cx={x} cy={y} r="2.4" fill={P.deep} opacity="0.6" />
-        ))}
-      </>
-    ),
-    front: (
-      <>
-        <path d="M31 41 C28 26 27 21 29 20 C34 24 41 30 45 35 Z" fill={P.main} stroke={P.stroke} strokeWidth="2.8" />
-        <path d="M70 40 C74 26 76 21 74 20 C68 25 61 30 57 35 Z" fill={P.main} stroke={P.stroke} strokeWidth="2.8" />
-        <circle cx="33" cy="30" r="3" fill="#FFFDF9" />
-        <circle cx="71" cy="29" r="3" fill="#FFFDF9" />
-        {/* 額頭條紋 */}
-        <path d="M43 40 C44 35 45 32 45 29" stroke={P.deep} strokeWidth="2.2" fill="none" opacity="0.7" />
-        <path d="M50 39 C51 34 52 31 52 28" stroke={P.deep} strokeWidth="2.2" fill="none" opacity="0.7" />
-        <path d="M57 40 C57 35 58 32 59 29" stroke={P.deep} strokeWidth="2.2" fill="none" opacity="0.7" />
-        {/* 身上斑點 */}
-        {[[33, 63], [42, 72], [56, 70], [66, 62], [50, 78], [28, 71]].map(([x, y], i) => (
-          <ellipse key={i} cx={x} cy={y} rx="3.6" ry="2.8" fill={P.deep} opacity="0.45" />
-        ))}
-        <path d="M46 61 L54 61 L50 65 Z" fill={P.deep} />
-      </>
-    ),
-    eyes: { lx: 40, ly: 54, rx: 61, ry: 53, r: 3.3, mouth: 'M44 68 C47 71 50 69 50 66 C50 69 53 71 56 68' },
-  }),
-
-  pangolin: (P) => ({
-    body: 'M57 38 C75 38 86 51 84 65 C82 79 66 85 50 85 C34 85 22 77 24 64 C26 51 41 38 57 38 Z',
-    behind: (
-      <>
-        <path d="M82 76 C93 82 95 93 87 94 C78 94 71 86 73 79 Z" fill={P.main} stroke={P.stroke} strokeWidth="2.6" />
-        <path d="M26 66 C15 66 8 70 8 74 C8 79 17 81 26 79 Z" fill={P.belly} stroke={P.stroke} strokeWidth="2.6" />
-      </>
-    ),
-    front: (
-      <>
-        {/* 鱗片：三排交錯弧線 */}
-        {[[36, 56], [50, 52], [64, 55], [42, 68], [57, 67], [71, 70], [33, 78], [48, 79], [63, 80]].map(([x, y], i) => (
-          <path key={i} d={`M${x - 8} ${y + 4} C${x - 6} ${y - 5} ${x + 6} ${y - 5} ${x + 8} ${y + 4}`} stroke={P.stroke} strokeWidth="2.4" fill="none" opacity="0.75" />
-        ))}
-        <circle cx="12" cy="73" r="1.8" fill={P.deep} />
-      </>
-    ),
-    eyes: { lx: 29, ly: 66, rx: 37, ry: 64, r: 2.4, mouth: null },
-  }),
-
-  otter: (P) => ({
-    body: 'M50 34 C67 34 77 46 76 61 C75 79 64 88 50 88 C36 88 25 79 24 61 C23 46 33 34 50 34 Z',
-    behind: (
-      <>
-        <path d="M71 84 C84 90 93 88 97 80" stroke={P.stroke} strokeWidth="6" fill="none" />
-        <circle cx="31" cy="38" r="6" fill={P.main} stroke={P.stroke} strokeWidth="2.6" />
-        <circle cx="69" cy="37" r="6" fill={P.main} stroke={P.stroke} strokeWidth="2.6" />
-      </>
-    ),
-    front: (
-      <>
-        <ellipse cx="50" cy="60" rx="12.5" ry="9.5" fill={P.belly} stroke={P.stroke} strokeWidth="2.1" />
-        <ellipse cx="50" cy="55" rx="3.8" ry="3" fill={P.deep} />
-        <path d="M50 58 C50 63 46 64 43 63" stroke={P.deep} strokeWidth="1.9" fill="none" />
-        <path d="M50 58 C50 63 54 64 57 63" stroke={P.deep} strokeWidth="1.9" fill="none" />
-        {[[39, 59, 28, 56], [39, 64, 28, 66], [61, 58, 72, 55], [61, 63, 72, 65]].map(([a, b, c, d], i) => (
-          <path key={i} d={`M${a} ${b} L${c} ${d}`} stroke={P.stroke} strokeWidth="1.6" fill="none" opacity="0.7" />
-        ))}
-      </>
-    ),
-    eyes: { lx: 40, ly: 47, rx: 60, ry: 46, r: 3.2, mouth: null },
-  }),
-
-  // ── 精靈（非人型、漂浮、帶光點）─────────────
-  sprite_moss: (P) => ({
-    float: true,
-    body: 'M50 30 C64 30 75 40 74 52 C73 66 63 77 50 77 C37 77 27 66 26 52 C25 40 36 30 50 30 Z',
-    behind: (
-      <>
-        {/* 苔蘚般的蓬鬆邊緣（扇貝弧線，不是尖刺） */}
-        {Array.from({ length: 15 }).map((_, i) => {
-          const a = (i / 15) * Math.PI * 2;
-          const a2 = ((i + 1) / 15) * Math.PI * 2;
-          const r = 23;
-          const p1 = [50 + Math.cos(a) * r, 53 + Math.sin(a) * r];
-          const p2 = [50 + Math.cos(a2) * r, 53 + Math.sin(a2) * r];
-          const mid = [(a + a2) / 2];
-          const c = [50 + Math.cos(mid) * (r + 8), 53 + Math.sin(mid) * (r + 8)];
-          return (
-            <path key={i} d={`M${p1[0]} ${p1[1]} Q${c[0]} ${c[1]} ${p2[0]} ${p2[1]} Z`} fill="#A8D8B9" stroke="#8FC7A3" strokeWidth="1.8" />
-          );
-        })}
-      </>
-    ),
-    front: (
-      <>
-        <path d="M46 32 C41 22 39 15 43 9" stroke="#5AA37F" strokeWidth="2.8" fill="none" />
-        <path d="M52 30 C55 20 59 14 64 11" stroke="#5AA37F" strokeWidth="2.8" fill="none" />
-        <path d="M43 9 C47 10 49 14 48 18" stroke="#5AA37F" strokeWidth="2.4" fill="none" />
-        <path d="M50 30 C50 23 51 17 53 13" stroke="#A8D8B9" strokeWidth="2.4" fill="none" />
-        <Sparkles pts={[[16, 34], [86, 44], [78, 76], [22, 74]]} />
-      </>
-    ),
-    eyes: { lx: 43, ly: 52, rx: 58, ry: 51, r: 3.1, mouth: 'M46 61 C48 64 52 64 54 61' },
-  }),
-
-  sprite_cloud: (P) => ({
-    float: true,
-    body: 'M32 66 C20 66 14 55 21 46 C18 34 30 25 40 31 C45 20 61 19 66 30 C79 27 88 39 82 49 C90 57 84 70 72 67 Z',
-    behind: null,
-    front: (
-      <>
-        {[[40, 76], [52, 80], [64, 74]].map(([x, y], i) => (
-          <path key={i} d={`M${x} ${y} C${x - 3.5} ${y + 6} ${x - 3} ${y + 11} ${x} ${y + 11} C${x + 3} ${y + 11} ${x + 3.5} ${y + 6} ${x} ${y} Z`} fill="#A5DEE4" stroke={P.stroke} strokeWidth="1.8" opacity="0.9" />
-        ))}
-        <Sparkles pts={[[14, 40], [88, 36], [90, 62]]} />
-      </>
-    ),
-    eyes: { lx: 42, ly: 48, rx: 59, ry: 47, r: 3.2, mouth: 'M46 57 C48 60 52 60 54 57' },
-  }),
-
-  sprite_flame: (P) => ({
-    float: true,
-    body: 'M50 18 C61 33 72 44 70 58 C68 73 60 81 50 81 C40 81 32 73 30 58 C28 44 40 33 50 18 Z',
-    behind: null,
-    front: (
-      <>
-        <path d="M50 66 C43 64 41 56 46 51 C51 46 59 49 58 56" stroke="#FBE790" strokeWidth="2.8" fill="none" />
-        <path d="M50 26 C55 36 61 43 60 51" stroke="#FBE790" strokeWidth="2.2" fill="none" opacity="0.7" />
-        <Sparkles pts={[[20, 46], [82, 40], [78, 70], [24, 74]]} color="#FBE790" />
-      </>
-    ),
-    eyes: { lx: 43, ly: 54, rx: 57, ry: 53, r: 3, mouth: 'M46 62 C48 65 52 65 54 62' },
-  }),
-
-  sprite_star: (P) => ({
-    float: true,
-    body: 'M50 14 C54 31 59 38 76 40 C62 50 59 58 63 76 C50 67 44 67 32 76 C36 58 33 50 19 40 C36 38 43 31 50 14 Z',
-    behind: null,
-    front: (
-      <>
-        {[[24, 82, 2.6], [17, 88, 1.9], [80, 80, 2.4], [88, 86, 1.7]].map(([x, y, r], i) => (
-          <circle key={i} cx={x} cy={y} r={r} fill="#FBE790" opacity="0.85" />
-        ))}
-        <Sparkles pts={[[12, 26], [88, 22]]} />
-      </>
-    ),
-    eyes: { lx: 44, ly: 43, rx: 57, ry: 42, r: 2.9, mouth: 'M47 51 C49 54 52 54 54 51' },
-  }),
+// 覆蓋物：愛心、飯碗、水滴、莓果、蛋殼碎片（固定色，不隨 hue）
+const OV = {
+  heart: { grid: ['.RR.RR.', 'RRRRRRR', '.RRRRR.', '..RRR..', '...R...'], colors: { R: '#E88AA0' } },
+  note: { grid: ['..NN', '.N.N', 'NN.N', 'NN.N', '..NN'], colors: { N: '#8A9FD0' } },
+  bowl: { grid: ['.PPPPP.', 'WWWWWWW', '.WWWWW.', '..WWW..'], colors: { P: '#C98F5E', W: '#9C8A78' } },
+  drop: { grid: ['.T.', 'TTT', 'TTT', '.T.'], colors: { T: '#8FD3E8' } },
+  berry: { grid: ['.PP.', 'PPPP', 'PPPP', '.PP.'], colors: { P: '#8E7BC0' } },
+  spark: { grid: ['.Y.', 'YYY', '.Y.'], colors: { Y: '#F5D97B' } },
 };
 
-function Sparkles({ pts, color = '#FFFFFF' }) {
-  return (
-    <>
-      {pts.map(([x, y], i) => (
-        <path
-          key={i}
-          d={`M${x} ${y - 5} C${x + 0.6} ${y - 1.2} ${x + 1.2} ${y - 0.6} ${x + 5} ${y} C${x + 1.2} ${y + 0.6} ${x + 0.6} ${y + 1.2} ${x} ${y + 5} C${x - 0.6} ${y + 1.2} ${x - 1.2} ${y + 0.6} ${x - 5} ${y} C${x - 1.2} ${y - 0.6} ${x - 0.6} ${y - 1.2} ${x} ${y - 5} Z`}
-          fill={color} stroke="#E8C94F" strokeWidth="1" opacity="0.8"
-        />
-      ))}
-    </>
-  );
+function Overlay({ name, x, y, k }) {
+  const o = OV[name];
+  if (!o) return null;
+  return <g transform={`translate(${x} ${y})`}>{gridRects(o.grid, o.colors, `${k}-`)}</g>;
 }
 
 // ══════════════════════════════════════════════════════════
-//  <Egg />
+//  像素圖資料
+//  格式：SPRITES[key] = { frames: [grid, ...], accent?: { F: '#hex', G: '#hex' } }
+//  · frames 只有 1 張 → 引擎自動產生 idle 循環（上下浮動 1px + 定時眨眼）
+//  · frames 有 2 張以上 → 依序輪播（翅膀拍動等需要真正第二格的生物用這個）
+//  · 眨眼＝把 'S'（眼睛高光）改畫成 'D'，所以眼睛請用 S 當高光
 // ══════════════════════════════════════════════════════════
-export function Egg({ hue = 40, pattern = 'dots', daysLeft = 14, size = 120 }) {
-  useEffect(ensureStyles, []);
-  const frame = useBoil();
-  const raw = useId();
-  const uid = raw.replace(/[^a-zA-Z0-9]/g, '');
-  const P = petPalette(hue);
-  const boil = `url(#pboil-${uid}-${frame})`;
-  const eggPath = 'M50 12 C65 12 79 34 78 55 C77 75 65 88 50 88 C35 88 23 75 22 55 C21 34 35 12 50 12 Z';
-  const crack1 = daysLeft <= 4;   // days >= 10
-  const crack2 = daysLeft <= 2;   // days >= 12
+
+const SPRITES = {
+
+  // ──────────── 稀有昆蟲 ────────────
+  firefly: {
+    accent: { F: '#F0C64A', G: '#FFF3B8' },
+    frames: [
+      [
+        '..D..............D..',
+        '...D............D...',
+        '....DD..DDDD..DD....',
+        '.......DASSAD.......',
+        '.......DAAAAD.......',
+        '.....DDBBBBBBDD.....',
+        '...DCCDBBBBBBDCCD...',
+        '..DCCCDBBBBBBDCCCD..',
+        '..DCCCDAAAAAADCCCD..',
+        '..DCCCDAAAAAADCCCD..',
+        '...DCCDAAAAAADCCD...',
+        '....DDDAAAAAADDD....',
+        '.......DAAAAD.......',
+        '......DFFFFFFD......',
+        '.....DFFGGGGFFD.....',
+        '.....DFFGGGGFFD.....',
+        '......DFFFFFFD......',
+        '.......DDDDDD.......',
+        '....................',
+        '....................',
+      ],
+      [
+        '..D..............D..',
+        '...D............D...',
+        '....DD..DDDD..DD....',
+        '.......DASSAD.......',
+        '.......DAAAAD.......',
+        '.....DDBBBBBBDD.....',
+        '.DCCCCDBBBBBBDCCCCD.',
+        'DCCCCCDBBBBBBDCCCCCD',
+        'DCCCCCDAAAAAADCCCCCD',
+        '.DCCCCDAAAAAADCCCCD.',
+        '..DCCDDAAAAAADDCCD..',
+        '....DDDAAAAAADDD....',
+        '.......DAAAAD.......',
+        '......DFFFFFFD......',
+        '.....DFFGGGGFFD.....',
+        '.....DFFGGGGFFD.....',
+        '......DFFFFFFD......',
+        '.......DDDDDD.......',
+        '....................',
+        '....................',
+      ],
+    ],
+  },
+
+  rhinobeetle: {
+    accent: { F: '#4A3524' },
+    frames: [
+      [
+        '.........FF.........',
+        '........FF..........',
+        '.......FF...........',
+        '.......FFF..........',
+        '........FFF.........',
+        '.......DDDDDD.......',
+        '......DASDDSAD......',
+        '.....DDAAAAAADD.....',
+        '...DDAAAAAAAAAADD...',
+        'DDDDABBBBBBBBBBADDDD',
+        'D..DABBBBBBBBBBAD..D',
+        '...DABBBBBBBBBBAD...',
+        'DDDDABBBBBBBBBBADDDD',
+        'D..DAABBBBBBBBAAD..D',
+        '...DAAAAAAAAAAAAD...',
+        'DDDD.DDAAAAAADD.DDDD',
+        '.......DDDDDD.......',
+        '....................',
+        '....................',
+        '....................',
+      ],
+    ],
+  },
+
+  swallowtail: {
+    accent: { F: '#F2C14E' },
+    frames: [
+      [
+        '....................',
+        '......D......D......',
+        '.......D....D.......',
+        '........DDDD........',
+        '.......DASSAD.......',
+        '..DDDD..DAAD..DDDD..',
+        '.DCCCCD.DAAD.DCCCCD.',
+        'DCCFFCCDDAADDCCFFCCD',
+        'DCCCCCCDDAADDCCCCCCD',
+        '..DCCCD.DAAD.DCCCD..',
+        '..DDDD..DAAD..DDDD..',
+        '...DDDD.DAAD.DDDD...',
+        '..DCCCCDDAADDCCCCD..',
+        '..DCFCCDDAADDCCFCD..',
+        '..DCCCCDDAADDCCCCD..',
+        '...DCCD.DAAD.DCCD...',
+        '....DDD.DAAD.DDD....',
+        '.....DD.DAAD.DD.....',
+        '........DDDD........',
+        '....................',
+      ],
+      [
+        '....................',
+        '......D......D......',
+        '.......D....D.......',
+        '........DDDD........',
+        '.......DASSAD.......',
+        '....DD..DAAD..DD....',
+        '...DCCD.DAAD.DCCD...',
+        '..DCFCD.DAAD.DCFCD..',
+        '..DCCCD.DAAD.DCCCD..',
+        '...DCCD.DAAD.DCCD...',
+        '....DD..DAAD..DD....',
+        '....DDD.DAAD.DDD....',
+        '...DCCCDDAADDCCCD...',
+        '...DCFCDDAADDCFCD...',
+        '...DCCCDDAADDCCCD...',
+        '....DCCDDAADDCCD....',
+        '.....DD.DAAD.DD.....',
+        '......D.DAAD.D......',
+        '........DDDD........',
+        '....................',
+      ],
+    ],
+  },
+
+  damselfly: {
+    accent: { F: '#8FD3E8' },
+    frames: [
+      [
+        '....................',
+        '........DDD.........',
+        '.......DASDAD.......',
+        '.......DASDAD.......',
+        '........DDD.........',
+        '.........DD.........',
+        '..DDDDD..DD..DDDDD..',
+        '.DFFFFFD.DD.DFFFFFD.',
+        '..DDDDD..DD..DDDDD..',
+        '...DDDD..DD..DDDD...',
+        '..DFFFD..DD..DFFFD..',
+        '...DDD...DD...DDD...',
+        '.........DD.........',
+        '........DAAD........',
+        '........DBBD........',
+        '........DAAD........',
+        '........DBBD........',
+        '........DAAD........',
+        '.........DD.........',
+        '....................',
+      ],
+      [
+        '....................',
+        '........DDD.........',
+        '.......DASDAD.......',
+        '.......DASDAD.......',
+        '........DDD.........',
+        '.........DD.........',
+        '...DDDD..DD..DDDD...',
+        '..DFFFD..DD..DFFFD..',
+        '...DDD...DD...DDD...',
+        '..DDDDD..DD..DDDDD..',
+        '.DFFFFFD.DD.DFFFFFD.',
+        '..DDDDD..DD..DDDDD..',
+        '.........DD.........',
+        '........DAAD........',
+        '........DBBD........',
+        '........DAAD........',
+        '........DBBD........',
+        '........DAAD........',
+        '.........DD.........',
+        '....................',
+      ],
+    ],
+  },
+
+  // ──────────── 可愛動物 ────────────
+  cat: {
+    accent: { F: '#E9A0A8' },
+    frames: [[
+      '....................',
+      '....D..........D....',
+      '....DAD......DAD....',
+      '...DAFAD....DAFAD...',
+      '...DAAADDDDDDAAAD...',
+      '....DAAAAAAAAAAD....',
+      '...DAAAAAAAAAAAAD...',
+      '...DASDAAAAAADSAD...',
+      '...DADDAAAAAADDAD...',
+      '...DAAAAAFFAAAAAD...',
+      '...DAAAADAADAAAAD...',
+      '....DAAAAAAAAAAD....',
+      '.....DDAAAAAADD.DDD.',
+      '.....DAACCCCAAD.DAD.',
+      '.....DAACCCCAAD.DAD.',
+      '.....DAACCCCAAD.DAD.',
+      '.....DAAACCAAADDDAD.',
+      '.....DAAAAAAAADDDDD.',
+      '.....DDDD..DDDD.....',
+      '....................',
+    ]],
+  },
+
+  dog: {
+    accent: { F: '#E9A0A8' },
+    frames: [[
+      '....................',
+      '....................',
+      '....................',
+      '.....DDDDDDDDDD.....',
+      'DBBD.DAAAAAAAAD.DBBD',
+      'DBBDDAAAAAAAAAADDBBD',
+      'DBBDAAAAAAAAAAAADBBD',
+      'DBBDASDAAAAAADSADBBD',
+      'DBBDADDAAAAAADDADBBD',
+      'DBBDAAAACDDCAAAADBBD',
+      'DBBDAAACCCCCCAAADBBD',
+      'DBBDDAAACFFCAAADDBBD',
+      '.DDDDDAAAAAAAADDDDD.',
+      '.....DAACCCCAAD.....',
+      '.....DAACCCCAAD.DDD.',
+      '.....DAACCCCAAD.DAD.',
+      '.....DAAACCAAADDDAD.',
+      '.....DAAAAAAAADDDD..',
+      '.....DDDD..DDDD.....',
+      '....................',
+    ]],
+  },
+
+  seal: {
+    accent: { F: '#6B5A50' },
+    frames: [[
+      '....................',
+      '....................',
+      '....................',
+      '......DDDDDDDD......',
+      '....DDAAAAAAAADD....',
+      '...DAAAAAAAAAAAAD...',
+      '...DASDAAAAAADSAD...',
+      '...DADDAAAAAADDAD...',
+      '.D.DAAACCCCCCAAAD.D.',
+      'DDDDAAACFFFFCAAADDDD',
+      '.D.DAAACCDDCCAAAD.D.',
+      '...DAAAACCCCAAAAD...',
+      '....DAAAAAAAAAAD....',
+      '....DAACCCCCCAAD....',
+      '....DAACCCCCCAAD....',
+      '...DAAACCCCCCAAAD...',
+      '..DAAAAACCCCAAAAAD..',
+      '.DAADDDDDDDDDDDDAAD.',
+      '.DDD............DDD.',
+      '....................',
+    ]],
+  },
+
+  rabbit: {
+    accent: { F: '#E9A0A8' },
+    frames: [[
+      '.......DD..DD.......',
+      '......DFAD.DAFD.....',
+      '......DFAD.DAFD.....',
+      '......DFAD.DAFD.....',
+      '......DAAD.DAAD.....',
+      '.....DDAADDDAADD....',
+      '....DAAAAAAAAAAAD...',
+      '...DAAAAAAAAAAAAD...',
+      '...DASDAAAAAADSAD...',
+      '...DADDAAAAAADDAD...',
+      '...DAAAAAFFAAAAAD...',
+      '....DAAAADAADAAAD...',
+      '.....DDAAAAAADD.....',
+      '.....DAACCCCAAD.....',
+      '.....DAACCCCAAD..DD.',
+      '.....DAACCCCAAD.DCCD',
+      '.....DAAACCAAAD.DCCD',
+      '.....DAAAAAAAADDDDD.',
+      '.....DDDD..DDDD.....',
+      '....................',
+    ]],
+  },
+
+  // ──────────── 保育動物 ────────────
+  blackbear: {
+    accent: { F: '#E9A0A8' },
+    frames: [[
+      '....................',
+      '....................',
+      '...DDD......DDD.....',
+      '..DAAAD....DAAAD....',
+      '..DAAADDDDDDAAAD....',
+      '...DDAAAAAAAADD.....',
+      '...DAAAAAAAAAAAD....',
+      '...DASDAAAAAADSAD...',
+      '...DADDAAAAAADDAD...',
+      '...DAAACCCCCCAAAD...',
+      '...DAAACFFFFCAAAD...',
+      '....DAACCDDCCAAD....',
+      '.....DDAAAAAADD.....',
+      '.....DAEAAAAEAD.....',
+      '.....DAAEAAEAAD.....',
+      '.....DAAAEEAAAD.....',
+      '.....DAAAAAAAAD.....',
+      '.....DAAAAAAAAD.....',
+      '.....DDDD..DDDD.....',
+      '....................',
+    ]],
+  },
+
+  leopardcat: {
+    accent: { F: '#E9A0A8' },
+    frames: [[
+      '....................',
+      '....D..........D....',
+      '....DAD......DAD....',
+      '...DAEAD....DAEAD...',
+      '...DAAADDDDDDAAAD...',
+      '....DABAAAAABAD.....',
+      '...DAAAABAABAAAAD...',
+      '...DASDAAAAAADSAD...',
+      '...DADDAAAAAADDAD...',
+      '...DAAAAAFFAAAAAD...',
+      '...DAAAADAADAAAAD...',
+      '....DAAAAAAAAAAD....',
+      '.....DDAAAAAADD.DDD.',
+      '.....DABCCCCBAD.DBD.',
+      '.....DAACCCCAAD.DAD.',
+      '.....DABCCCCBAD.DBD.',
+      '.....DAAACCAAADDDAD.',
+      '.....DABAAAABADDDDD.',
+      '.....DDDD..DDDD.....',
+      '....................',
+    ]],
+  },
+
+  pangolin: {
+    accent: { F: '#B98B5E' },
+    frames: [[
+      '....................',
+      '....................',
+      '.........DDDDDD.....',
+      '.......DDFFFFFFDD...',
+      '......DFFFFFFFFFFD..',
+      '..DDDDFFDFFDFFDFFFD.',
+      '.DAAADFFFFFFFFFFFFD.',
+      'DASADFFDFFDFFDFFFFD.',
+      'DADDDFFFFFFFFFFFFFD.',
+      '.DAAADFFDFFDFFDFFD..',
+      '..DDDDFFFFFFFFFFD...',
+      '.....DFFDFFDFFDFD...',
+      '.....DFFFFFFFFFFD...',
+      '.....DAAFFFFFFAAD...',
+      '.....DAAAAAAAAADDDD.',
+      '.....DAAAAAAAADFFFD.',
+      '.....DDDD..DDDDDFFD.',
+      '.................DD.',
+      '....................',
+      '....................',
+    ]],
+  },
+
+  otter: {
+    accent: { F: '#6B5A50' },
+    frames: [[
+      '....................',
+      '....................',
+      '....DD........DD....',
+      '...DAAD......DAAD...',
+      '...DAAADDDDDDAAAD...',
+      '....DAAAAAAAAAAD....',
+      '...DAAAAAAAAAAAAD...',
+      '...DASDAAAAAADSAD...',
+      '...DADDAAAAAADDAD...',
+      '...DAAACCCCCCAAAD...',
+      '...DAAACFFFFCAAAD...',
+      '....DAACCCCCCAAD....',
+      '.....DDAAAAAADD.....',
+      '.....DAACCCCAAD.....',
+      '.....DAACCCCAAD.....',
+      '.....DAACCCCAAD.DDD.',
+      '.....DAAACCAAADDBBD.',
+      '.....DAAAAAAAADBBD..',
+      '.....DDDD..DDDDD....',
+      '....................',
+    ]],
+  },
+
+  redpanda: {
+    accent: { F: '#C9633A' },
+    frames: [[
+      '....................',
+      '....................',
+      '...DDD......DDD.....',
+      '..DEEED....DEEED....',
+      '..DEEEDDDDDDEEED....',
+      '...DDFFFFFFFFDD.....',
+      '...DFFEEFFEEFFFD....',
+      '...DFSDEEFFEEDSFD...',
+      '...DFDDEEFFEEDDFD...',
+      '...DFFEEEDDEEEFFD...',
+      '....DFEEEEEEEEFD....',
+      '.....DDFFFFFFDD.....',
+      '.....DFFEEEEFFD.....',
+      '.....DFFEEEEFFD.DDD.',
+      '.....DFFEEEEFFD.DFD.',
+      '.....DFFEEEEFFDDDED.',
+      '.....DFFFEEFFFDDDFD.',
+      '.....DFFFFFFFFDDDED.',
+      '.....DDDD..DDDDDDDD.',
+      '....................',
+    ]],
+  },
+
+  fennec: {
+    accent: { F: '#E9A0A8' },
+    frames: [[
+      '...DD..........DD...',
+      '..DAAD........DAAD..',
+      '..DAFAD......DAFAD..',
+      '..DAFFAD....DAFFAD..',
+      '..DAFFAD....DAFFAD..',
+      '...DAFAD....DAFAD...',
+      '...DAAADDDDDDAAAD...',
+      '....DAAAAAAAAAAD....',
+      '...DAAAAAAAAAAAAD...',
+      '...DASDAAAAAADSAD...',
+      '...DADDAAAAAADDAD...',
+      '...DAAAAAFFAAAAAD...',
+      '....DAAAADAADAAAD...',
+      '.....DDAAAAAADD.....',
+      '.....DAACCCCAAD.DDD.',
+      '.....DAACCCCAAD.DCD.',
+      '.....DAAACCAAADDDCD.',
+      '.....DAAAAAAAADDDDD.',
+      '.....DDDD..DDDD.....',
+      '....................',
+    ]],
+  },
+
+  axolotl: {
+    accent: { F: '#F2A0C0' },
+    frames: [[
+      '....................',
+      '....................',
+      '..FF..........FF....',
+      '.FDDF........FDDF...',
+      '..FDF..........FDF..',
+      '.FDDF.DDDDDD.FDDF...',
+      '..FFDDAAAAAADDFF....',
+      '...DAAAAAAAAAAD.....',
+      '...DASDAAAADSAD.....',
+      '...DADDAAAADDAD.....',
+      '...DAAADDDDAAAD.....',
+      '...DAAAAAAAAAAD.....',
+      '....DAAAAAAAAD......',
+      '....DAACCCCAAD......',
+      '....DAACCCCAADDD....',
+      '....DAACCCCAADAAD...',
+      '....DAAACCAAADAAD...',
+      '.....DAAAAAAADDAD...',
+      '.....DDDD.DDDD.DD...',
+      '....................',
+    ]],
+  },
+
+  seaotter: {
+    accent: { F: '#9AA7B5' },
+    frames: [[
+      '....................',
+      '....................',
+      '....DD........DD....',
+      '...DAAD......DAAD...',
+      '...DAAADDDDDDAAAD...',
+      '....DAAAAAAAAAAD....',
+      '...DAAAAAAAAAAAAD...',
+      '...DASDAAAAAADSAD...',
+      '...DADDAAAAAADDAD...',
+      '...DAAACCCCCCAAAD...',
+      '....DAACCDDCCAAD....',
+      '.....DDAAAAAADD.....',
+      '....DAACCCCCCAAD....',
+      '...DAACCFFFFCCAAD...',
+      '...DAACFFFFFFCAAD...',
+      '...DAACCFFFFCCAAD...',
+      '....DAACCCCCCAAD....',
+      '.DDDDAAAAAAAAAADDDD.',
+      '.DBBDDDDD..DDDDDBBD.',
+      '.DDD............DDD.',
+    ]],
+  },
+
+  bluedragon: {
+    accent: { F: '#4A7FD0', G: '#BFE0F5' },
+    frames: [[
+      '....................',
+      '....................',
+      '....................',
+      '.DD.....DDDD.....DD.',
+      'DFFD...DFAAFD...DFFD',
+      'DFFFD.DFFAAFFD.DFFFD',
+      '.DFFDDFFAAAAFFDDFFD.',
+      '..DFFFFAASSAAFFFFD..',
+      '...DFFAADDDDAAFFD...',
+      '.DD.DFAAAAAAAAFD.DD.',
+      'DFFDDFAAGGGGAAFDDFFD',
+      'DFFFDFAAGGGGAAFDFFFD',
+      '.DFFFFAAGGGGAAFFFFD.',
+      '..DFFFAAGGGGAAFFFD..',
+      '...DDFAAAGGAAAFDD...',
+      '.....DFAAAAAAFD.....',
+      '......DFFAAFFD......',
+      '.......DFFFFD.......',
+      '........DDDD........',
+      '....................',
+    ]],
+  },
+
+  shoebill: {
+    accent: { F: '#C9B48A' },
+    frames: [[
+      '.........DD.........',
+      '........D..D........',
+      '.......DDDDDD.......',
+      '......DAAAAAAD......',
+      '.....DASDAADSAD.....',
+      '.....DADDAADDAD.....',
+      '.....DAAAAAAAAD.....',
+      '.....DFFFFFFFFD.....',
+      '....DFFFFFFFFFFD....',
+      '....DFFFDDDDFFFD....',
+      '....DFFFFFFFFFFD....',
+      '.....DDFFFFFFDD.....',
+      '.......DDDDDD.......',
+      '......DAAAAAAD......',
+      '.....DAACCCCAAD.....',
+      '.....DAACCCCAAD.....',
+      '.....DAAACCAAAD.....',
+      '.....DAAAAAAAAD.....',
+      '......DFD..DFD......',
+      '.....DFFD..DFFD.....',
+    ]],
+  },
+
+  sawfish: {
+    accent: { F: '#C9D4DC' },
+    frames: [[
+      '....................',
+      '....................',
+      '....................',
+      '....................',
+      '..............DDD...',
+      '.........DDDDDDDDD..',
+      '........DAAAAAAAAAD.',
+      '.F.F.F.FDAAAAAAAAAAD',
+      'DFFFFFFFDASDAAAAAAAD',
+      'DFFFFFFFDADDAAAAAAAD',
+      '.F.F.F.FDAAAAAAAAAAD',
+      '........DAAAAAAAAAAD',
+      '........DCCCCCCCCCAD',
+      '.........DCCCCCCCDD.',
+      '..........DDDDDDD...',
+      '....................',
+      '....................',
+      '....................',
+      '....................',
+      '....................',
+    ]],
+  },
+
+  // ──────────── 精靈 ────────────
+  sprite_moss: {
+    accent: { F: '#7FBF8F' },
+    frames: [[
+      '....................',
+      '.........FF.........',
+      '........FF..........',
+      '.......FFF..........',
+      '......FDDDDF........',
+      '.....DFAAAAFD.......',
+      '....DFAAAAAAFD......',
+      '...DFAAAAAAAAFD.....',
+      '...DAASDAADSAAD.....',
+      '...DAADDAADDAAD.....',
+      '...DFAAAAAAAAFD.....',
+      '...DFAAADDAAAFD.....',
+      '....DFAAAAAAFD......',
+      '.....DFAAAAFD.......',
+      '......DFFFFD........',
+      '.......DDDD.........',
+      '....................',
+      '...Y..........Y.....',
+      '..YYY........YYY....',
+      '...Y..........Y.....',
+    ]],
+  },
+
+  sprite_cloud: {
+    accent: { F: '#8FD3E8' },
+    frames: [[
+      '....................',
+      '....................',
+      '.......DDDD.DDD.....',
+      '...DDDDCCCCDDCCCDD..',
+      '..DCCCCCCCCCCCCCCD..',
+      '.DCCCCCCCCCCCCCCCCD.',
+      '.DCCSDCCCCCCCCDSCCD.',
+      '.DCCDDCCCCCCCCDDCCD.',
+      '.DCCCCCCCDDCCCCCCCD.',
+      '.DCCCCCCCCCCCCCCCCD.',
+      '..DCCCCCCCCCCCCCCD..',
+      '...DDCCCCCCCCCCDD...',
+      '.....DDDDDDDDDD.....',
+      '......F...F...F.....',
+      '.....FFF.FFF.FFF....',
+      '......F...F...F.....',
+      '....................',
+      '....................',
+      '....................',
+      '....................',
+    ]],
+  },
+
+  sprite_flame: {
+    accent: { F: '#F2A03C', G: '#F7D774' },
+    frames: [[
+      '.........F..........',
+      '........FF..........',
+      '.......FFFF.........',
+      '......FFGGFF........',
+      '.....DFGGGGFD.......',
+      '....DFAGGGGAFD......',
+      '...DFAAAAAAAAFD.....',
+      '...DFASDAADSAFD.....',
+      '...DFADDAADDAFD.....',
+      '...DFAAAAAAAAFD.....',
+      '...DFAAADDAAAFD.....',
+      '...DFAAAAAAAAFD.....',
+      '....DFAAAAAAFD......',
+      '.....DFAAAAFD.......',
+      '......DFFFFD........',
+      '.......DDDD.........',
+      '....................',
+      '....................',
+      '....................',
+      '....................',
+    ]],
+  },
+
+  sprite_star: {
+    accent: { F: '#F7D774' },
+    frames: [[
+      '.........D..........',
+      '........DFD.........',
+      '........DFD.........',
+      '.......DFFFD........',
+      'DDDD...DFFFD...DDDD.',
+      'DFFFDDDFFFFFDDDFFFD.',
+      '.DFFFFFFFFFFFFFFFD..',
+      '..DFFFFFFFFFFFFFD...',
+      '...DFFSDFFFFDSFFD...',
+      '...DFFDDFFFFDDFFD...',
+      '...DFFFFFDDFFFFFD...',
+      '....DFFFFFFFFFFD....',
+      '....DFFFFFFFFFFD....',
+      '...DFFFDDDDDDFFFD...',
+      '..DFFFD......DFFFD..',
+      '.DFFFD........DFFFD.',
+      '.DDDD..........DDDD.',
+      '....................',
+      '....................',
+      '....................',
+    ]],
+  },
+};
+
+// 每階「已實作」的 key（用來當未知 key 的 fallback 池）
+const IMPLEMENTED = Object.keys(SPRITES).reduce((acc, k) => { acc[k] = true; return acc; }, {});
+const TIER_POOL = Object.fromEntries(
+  TIER_ORDER.filter((t) => t !== 'egg').map((t) => [t, Object.keys(SPECIES[t] || {}).filter((k) => IMPLEMENTED[k])])
+);
+
+/**
+ * 未知／未實作的 species_key 一律 fallback 到同階已實作的物種（依 hue 穩定挑選），
+ * 同階也沒有就退到 'firefly'。永遠不會回傳空白。
+ */
+export function resolveSprite(tier, key, hue = 0) {
+  if (key && SPRITES[key]) return key;
+  const pool = TIER_POOL[tier] || [];
+  if (pool.length) return pool[Math.abs(Math.round(hue)) % pool.length];
+  const all = Object.keys(SPRITES);
+  return all[Math.abs(Math.round(hue)) % all.length] || 'firefly';
+}
+
+// ══════════════════════════════════════════════════════════
+//  蛋
+// ══════════════════════════════════════════════════════════
+const EGG_FRAME = [
+  '....................',
+  '........DDDD........',
+  '.......DACCAD.......',
+  '......DACCAAAD......',
+  '......DACCAAAD......',
+  '.....DAACAAAAAD.....',
+  '.....DAAAAAAAAD.....',
+  '....DAAAAAAAAAAD....',
+  '....DAAAAAAAAAAD....',
+  '...DAAAAAAAAAAAAD...',
+  '...DAAAAAAAAAAAAD...',
+  '...DAAAAAAAAAAAAD...',
+  '...DAAAAAAAAAAAAD...',
+  '....DAAAAAAAAAAD....',
+  '....DAAAAAAAAAAD....',
+  '.....DAAAAAAAAD.....',
+  '......DAAAAAAD......',
+  '.......DDDDDD.......',
+  '....................',
+  '....................',
+];
+
+// 花紋：蛋殼上的像素點（[x, y, 顏色字母]）
+const EGG_PATTERN = {
+  dots: [[7, 8, 'C'], [11, 7, 'C'], [13, 10, 'C'], [6, 11, 'C'], [10, 13, 'C'], [8, 15, 'C'], [12, 14, 'C']],
+  stripes: [
+    [6, 7, 'B'], [7, 8, 'B'], [8, 9, 'B'], [9, 10, 'B'], [10, 11, 'B'], [11, 12, 'B'], [12, 13, 'B'],
+    [10, 7, 'B'], [11, 8, 'B'], [12, 9, 'B'], [13, 10, 'B'], [6, 12, 'B'], [7, 13, 'B'], [8, 14, 'B'],
+  ],
+  speckle: [
+    [6, 9, 'B'], [9, 8, 'B'], [12, 9, 'B'], [7, 12, 'B'], [10, 11, 'B'], [13, 12, 'B'],
+    [8, 14, 'B'], [11, 15, 'B'], [6, 15, 'B'], [14, 11, 'B'], [9, 16, 'B'],
+  ],
+  swirl: [
+    [7, 9, 'C'], [8, 8, 'C'], [9, 9, 'C'], [8, 10, 'C'],
+    [12, 12, 'C'], [13, 11, 'C'], [14, 12, 'C'], [13, 13, 'C'],
+    [8, 14, 'C'], [9, 13, 'C'], [10, 14, 'C'],
+  ],
+  plain: [],
+};
+
+const CRACK1 = [[7, 6], [8, 7], [7, 8], [8, 9], [7, 10], [8, 11]];
+const CRACK2 = [[12, 8], [11, 9], [12, 10], [11, 11], [12, 12], [11, 13]];
+
+function Pix({ pts, color, k }) {
+  return <>{pts.map(([x, y], i) => <rect key={`${k}${i}`} x={x} y={y} width={1} height={1} fill={color} />)}</>;
+}
+
+/**
+ * <Egg /> — 2 格晃動（左右各偏 1 像素）。越接近孵化晃得越頻繁。
+ * daysLeft：距離孵化還差幾次打卡（App.jsx 傳 HATCH_DAYS - days）
+ */
+export function Egg({ hue = 40, pattern = 'dots', daysLeft = HATCH_AT, size = 120 }) {
+  const tick = useTick();
+  const P = pixelPalette(hue);
+  const days = HATCH_AT - daysLeft;
+  const crack1 = days >= CRACK1_AT;
+  const crack2 = days >= CRACK2_AT;
+
+  // 晃動頻率：快孵化了 → 每格都晃；還早 → 每 3 格才晃一次
+  const div = daysLeft <= 2 ? 1 : daysLeft <= 4 ? 2 : 3;
+  const dx = REDUCED ? 0 : (Math.floor(tick / div) % 2 === 0 ? -1 : 1);
+  const marks = EGG_PATTERN[pattern] || EGG_PATTERN.plain;
 
   return (
-    <svg width={size} height={size} viewBox="0 0 100 100" aria-label="蛋" role="img" style={{ overflow: 'visible', display: 'block' }}>
-      <BoilDefs uid={uid} scale={1.5} />
-      <clipPath id={`eclip-${uid}`}><path d={eggPath} /></clipPath>
-      <g filter={boil} strokeLinecap="round" strokeLinejoin="round">
-        <g className="egg-wobble">
-          <path d={eggPath} fill={P.main} stroke={P.stroke} strokeWidth="3.2" />
-          <g clipPath={`url(#eclip-${uid})`}>
-            <PatternMarks pattern={pattern} P={P} />
-          </g>
-          <path d={eggPath} fill="none" stroke={P.stroke} strokeWidth="3.2" />
-          {/* 頂部反光 */}
-          <path d="M38 30 C40 23 45 19 50 18" stroke="#FFFDF9" strokeWidth="3" fill="none" opacity="0.85" />
-          {crack1 && <path d="M42 30 L48 38 L41 45 L48 52" stroke={P.deep} strokeWidth="2.6" fill="none" />}
-          {crack2 && <path d="M62 34 L56 42 L63 48 L58 55" stroke={P.deep} strokeWidth="2.4" fill="none" />}
-        </g>
+    <svg
+      width={size} height={size} viewBox="0 0 20 20" role="img" aria-label="蛋"
+      shapeRendering="crispEdges" style={{ display: 'block', overflow: 'visible' }}
+    >
+      <g transform={`translate(${dx} 0)`}>
+        {gridRects(EGG_FRAME, P, 'e')}
+        {marks.map(([x, y, c], i) => <rect key={`m${i}`} x={x} y={y} width={1} height={1} fill={P[c]} />)}
+        {crack1 && <Pix pts={CRACK1} color={P.D} k="c1" />}
+        {crack2 && <Pix pts={CRACK2} color={P.D} k="c2" />}
       </g>
     </svg>
   );
 }
 
 // ══════════════════════════════════════════════════════════
+//  孵化：一次性碎片飛散動畫（5 格 × 400ms = 2s）
+// ══════════════════════════════════════════════════════════
+const POKE_FRAMES = 4;      // 點一下 → happy 播 4 格
+const SHARDS = [
+  [[8, 8], [11, 8], [7, 11], [12, 11]],
+  [[6, 6], [13, 6], [5, 12], [14, 12]],
+  [[4, 4], [15, 4], [3, 14], [16, 14]],
+  [[2, 2], [17, 2], [1, 16], [18, 16]],
+  [],
+];
+const HATCH_DY = [6, 4, 2, 0, 0];
+
+// ══════════════════════════════════════════════════════════
 //  <Pet />
 // ══════════════════════════════════════════════════════════
-export function Pet({ pet, days = 0, size = 120, health = 'ok' }) {
-  useEffect(ensureStyles, []);
-  const frame = useBoil();
-  const raw = useId();
-  const uid = raw.replace(/[^a-zA-Z0-9]/g, '');
+export function Pet({ pet, days = 0, size = 120, health = 'ok', motion = null }) {
+  const tick = useTick();
+  const [pokeTick, setPokeTick] = useState(-99);
+  const [hatchStart, setHatchStart] = useState(-99);
+  const wasEgg = useRef(null);
 
-  if (!pet) return <svg width={size} height={size} viewBox="0 0 100 100" />;
+  const hatched = !!(pet && pet.hatched_at) && (pet.species_tier || 'egg') !== 'egg';
+
+  // 蛋 → 生物 的瞬間觸發一次孵化動畫（以全域幀數計時，與逐格時脈同步）
+  useEffect(() => {
+    if (!pet) return;
+    if (wasEgg.current === true && hatched && !REDUCED) setHatchStart(tickN);
+    wasEgg.current = !hatched;
+  }, [pet, hatched]);
+
+  if (!pet) return <svg width={size} height={size} viewBox="0 0 20 20" />;
 
   const hue = Number(pet.hue) || 0;
   const pattern = pet.pattern || 'plain';
   const tier = pet.species_tier || 'egg';
 
   // 未孵化 → 畫蛋
-  if (!pet.hatched_at || tier === 'egg') {
-    return <Egg hue={hue} pattern={pattern} daysLeft={Math.max(0, HATCH_DAYS - days)} size={size} />;
+  if (!hatched) {
+    return <Egg hue={hue} pattern={pattern} daysLeft={Math.max(0, HATCH_AT - days)} size={size} />;
   }
 
-  const key = (SHAPES[pet.species_key] ? pet.species_key : pickSpecies(tier, hue)) || 'firefly';
-  const P = petPalette(hue);
-  const shape = (SHAPES[key] || SHAPES.firefly)(P);
-  const stage = stageIndex(days);
-  const scale = STAGE_SCALE[stage];
-  const boil = `url(#pboil-${uid}-${frame})`;
+  const key = resolveSprite(tier, pet.species_key, hue);
+  const sprite = SPRITES[key];
+  const P = pixelPalette(hue, health);
+  const accent = sprite.accent || {};
+  const colors = { ...P, F: accent.F || '#E9A0A8', G: accent.G || '#FFFDF9' };
+  if (health === 'weak' || health === 'dead') { colors.F = P.B; colors.G = P.C; }
 
-  // 飢餓：降飽和；虛弱：整體轉灰＋動作變慢
-  const dim = health === 'weak' ? 'grayscale(0.82) opacity(0.9)' : health === 'hungry' ? 'saturate(0.5)' : undefined;
-  const animClass = (shape.float ? 'pet-float' : 'pet-breathe') + (health === 'weak' ? ' pet-slow' : '');
+  const small = size <= 48;
+  const stage = stageIndex(days);
+  const pad = STAGE_PAD[stage];
+
+  const hatchAge = tick - hatchStart;
+  const hatching = !REDUCED && hatchAge >= 0 && hatchAge < SHARDS.length;
+  const pokeAge = tick - pokeTick;
+  const happy = !hatching && !REDUCED && pokeAge >= 0 && pokeAge < POKE_FRAMES;
+
+  const state = hatching ? 'hatch'
+    : happy ? 'happy'
+      : motion === 'eating' ? 'eating'
+        : health === 'hungry' ? 'hungry'
+          : (health === 'weak' || health === 'dead') ? 'weak'
+            : 'idle';
+
+  // 小尺寸與虛弱狀態把幀率降到 1.25fps
+  const div = small || state === 'weak' ? 2 : 1;
+  const f = REDUCED ? 0 : Math.floor(tick / div);
+
+  const frames = sprite.frames;
+  const multi = frames.length > 1;
+
+  // ── 逐格決定：畫哪一張、位移多少、要不要眨眼 ──
+  let grid = frames[0];
+  let dy = 0;
+  let blink = false;
+  let opacity = 1;
+  const extras = [];
+
+  if (state === 'hatch') {
+    const i = Math.min(SHARDS.length - 1, Math.max(0, hatchAge));
+    dy = HATCH_DY[i];
+    SHARDS[i].forEach(([x, y], n) => extras.push(
+      <rect key={`sh${n}`} x={x} y={y} width={2} height={2} fill={n % 2 ? P.C : P.A} />
+    ));
+  } else if (state === 'happy') {
+    grid = multi ? frames[f % frames.length] : frames[0];
+    dy = f % 2 === 0 ? -3 : -1;
+    if (!small) extras.push(<Overlay key="h1" name="heart" x={13} y={0} k="h1" />);
+    if (!small && f % 2 === 0) extras.push(<Overlay key="h2" name="note" x={2} y={1} k="h2" />);
+  } else if (state === 'hungry') {
+    grid = frames[0];
+    dy = 1;                                     // 垂頭
+    blink = f % 4 === 3;
+    if (!small) extras.push(<Overlay key="b" name="bowl" x={0} y={16} k="b" />);
+    if (!small && f % 2 === 0) extras.push(<Overlay key="d" name="drop" x={16} y={2} k="d" />);
+  } else if (state === 'weak') {
+    grid = frames[0];
+    dy = f % 8 === 0 ? -1 : 0;                  // 動作幅度極小
+    blink = f % 3 !== 0;                        // 大多時候半閉眼
+    opacity = f % 7 === 0 ? 0.45 : 1;           // 偶爾閃爍一下
+    if (!small) extras.push(<Overlay key="d" name="drop" x={16} y={2} k="d" />);
+  } else if (state === 'eating') {
+    grid = multi ? frames[f % frames.length] : frames[0];
+    dy = f % 2 === 0 ? 0 : -1;
+    extras.push(<Overlay key="f" name="berry" x={f % 3 === 0 ? 16 : 14} y={9} k="f" />);
+  } else {
+    // idle：單張圖 → 6 拍循環（浮動 ×2 + 眨眼 ×1）；多張圖 → 依序輪播
+    if (multi) {
+      grid = frames[f % frames.length];
+    } else {
+      const slot = f % 6;
+      dy = slot === 1 || slot === 3 ? -1 : 0;
+      blink = slot === 5;
+    }
+  }
+
+  const paint = blink ? { ...colors, S: colors.D } : colors;
+  const label = speciesLabel(tier, key) + (health !== 'ok' ? `（${HEALTH_LABEL[health]}）` : '');
 
   return (
     <svg
-      width={size} height={size} viewBox="0 0 100 100"
-      role="img" aria-label={speciesLabel(tier, key) + (health !== 'ok' ? `（${HEALTH_LABEL[health]}）` : '')}
-      style={{ overflow: 'visible', display: 'block', filter: dim }}
+      width={size} height={size}
+      viewBox={`${-pad} ${-pad} ${20 + pad * 2} ${20 + pad * 2}`}
+      role="img" aria-label={label}
+      shapeRendering="crispEdges"
+      onClick={() => setPokeTick(tickN)}
+      style={{ display: 'block', overflow: 'visible', cursor: small ? 'inherit' : 'pointer' }}
     >
-      <BoilDefs uid={uid} scale={1.8} />
-      <clipPath id={`bclip-${uid}`}><path d={shape.body} /></clipPath>
-      <g filter={boil} strokeLinecap="round" strokeLinejoin="round">
-        <g transform={`translate(50 54) scale(${scale}) translate(-50 -54)`}>
-          <g className={animClass}>
-            {shape.behind}
-            <path d={shape.body} fill={P.main} stroke={P.stroke} strokeWidth="3" />
-            <g clipPath={`url(#bclip-${uid})`}>
-              <PatternMarks pattern={pattern} P={P} />
-            </g>
-            <path d={shape.body} fill="none" stroke={P.stroke} strokeWidth="3" />
-            {shape.front}
-            <Face eyes={shape.eyes} P={P} blush={stage >= 2 && health === 'ok'} mood={health} />
-            {health !== 'ok' && <Droplet x={74} y={16} />}
-            {/* 成熟階段：小葉冠 + 光點 */}
-            {stage >= 3 && health === 'ok' && (
-              <>
-                <path d="M38 16 C42 8 50 6 54 10 C58 6 66 9 68 16" stroke="#5AA37F" strokeWidth="2.6" fill="none" />
-                <circle cx="54" cy="9" r="2.4" fill="#FBE790" stroke="#E8C94F" strokeWidth="1.2" />
-                <Sparkles pts={[[14, 20], [88, 26]]} />
-              </>
-            )}
-          </g>
-        </g>
+      <g opacity={opacity}>
+        <g transform={`translate(0 ${dy})`}>{gridRects(grid, paint, 'p')}</g>
+        {extras}
       </g>
     </svg>
   );
