@@ -63,7 +63,17 @@ SPRITES = {
 | **1 張**（推薦，多數物種用這個） | 自動產生 6 拍 idle 循環：`平 → 上移1px → 平 → 上移1px → 平 → 眨眼`。約 2.4 秒一輪 |
 | **2 張以上** | 依序輪播，每格 400ms。翅膀拍動、觸手擺動這種**必須有第二張**的才用 |
 
-目前用 2 張的：`firefly`（翅膀收/展）、`swallowtail`（拍翅）、`damselfly`（上下翅交替）。
+目前用 2 張的：`firefly`（翅膀收/展）、`swallowtail`（拍翅）、`damselfly`（上下翅交替），以及**全部 16 種神話生物精靈**（尾巴擺／火焰閃／鱗片流動／小眼睛眨等特徵動作）。
+
+> ⚠️ 多張 frame 會**關掉引擎自動的浮動與眨眼**（見 `Pet()` idle 分支），所以動作必須自己畫進第 2 格。
+
+精靈階物種（`SPECIES.spirit`，共 20 個 key）：
+`sprite_moss` `sprite_cloud` `sprite_flame` `sprite_star`（舊有 4 個通用精靈，DB 可能已存，**不可刪改**）＋
+`kitsune` 九尾狐 `phoenix` 不死鳥 `qilin` 麒麟 `baize` 白澤 `dijiang` 帝江 `kelpie` 凱爾派
+`ouroboros` 銜尾蛇 `basilisk` 巴西利斯克 `behemoth` 貝希摩斯 `ammit` 阿米特 `jianbird` 比翼鳥
+`goldencrow` 三足金烏 `thunderbird` 雷鳥 `carbuncle` 寶石獸 `jormungandr` 耶夢加得 `ratatoskr` 世界樹松鼠。
+
+註：`dijiang`（帝江）刻意**沒有 `S`**——牠無臉，不要幫牠加眼睛。
 
 ---
 
