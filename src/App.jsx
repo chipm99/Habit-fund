@@ -6,7 +6,7 @@ import {
   Pet, Egg, GIFTS, HATCH_DAYS, STAGE_LABEL, TIER_LABEL,
   speciesLabel, pickSpecies, stageIndex, petXp, evolveTier, nextTierGoal,
   isoWeek, hueFromId, patternFromId,
-  diffMult, petHealth, HEALTH_LABEL,
+  diffMult, petHealth, HEALTH_LABEL, CARE_COST, REVIVE_COST,
 } from './Pet.jsx';
 
 const SUPABASE_URL = 'https://keenwhiygrrnxhllibxa.supabase.co';
@@ -1724,7 +1724,6 @@ function MainApp({ user, toast, onSignOut }) {
   const [vacEndInput, setVacEndInput] = useState(''); // 「開始休假」結束日期選擇
   const [giftHabitId, setGiftHabitId] = useState(null); // 禮物商店 modal 對應的習慣
   const [evolveNews, setEvolveNews] = useState(null);   // {from, to} 進化提示
-  const [mourn, setMourn] = useState([]);               // [{name, days, habit}] 哀悼 modal
   const petSyncing = useRef(false);
   const [editHabit, setEditHabit] = useState(null); // 目前編輯中的習慣 object | null
   const [deleteTarget, setDeleteTarget] = useState(null); // 待永久刪除的（已暫停）習慣 object | null
@@ -1855,8 +1854,12 @@ function MainApp({ user, toast, onSignOut }) {
     const fromDate = String(from).split('T')[0];
     return checkins.filter(c => c.habit_id === habitId && c.checked_date >= fromDate).length;
   };
-  // 寵物幣＝該習慣打卡數×fund_per_day − 已花費；不動 fund_uses，也不影響捐款餘額
-  const petCoins = (h) => totalChecks(h.id) * h.fund_per_day - (Number(petOf(h.id)?.coins_spent) || 0);
+  // 寵物幣＝該習慣打卡數×fund_per_day − 餵食投入(coins_spent) − 急救/復活花費(rescue_spent)
+  // rescue_spent 另計，確保付費搶救不會變成進化推進量。不動 fund_uses，也不影響捐款餘額。
+  const petCoins = (h) => {
+    const p = petOf(h.id);
+    return totalChecks(h.id) * h.fund_per_day - (Number(p?.coins_spent) || 0) - (Number(p?.rescue_spent) || 0);
+  };
   const totalPetCoins = habits.reduce((s, h) => s + petCoins(h), 0);
 
   // ── 休假扣除工具 ──────────────────────────────────────
@@ -1877,7 +1880,13 @@ function MainApp({ user, toast, onSignOut }) {
   // gap = 今天 − 最後打卡日（從未打卡則自 created_at 起算），再扣掉落在休假區間的天數
   const petGap = (h) => {
     const dates = checkins.filter(c => c.habit_id === h.id).map(c => c.checked_date).sort();
-    const base = dates.length ? dates[dates.length - 1] : (h.created_at || '').split('T')[0];
+    let base = dates.length ? dates[dates.length - 1] : (h.created_at || '').split('T')[0];
+    // 急救照顧當天也算一次「照料」：取 max(最後打卡日, last_cared_at 當天)，讓倒數重置
+    const caredAt = petOf(h.id)?.last_cared_at;
+    if (caredAt) {
+      const caredDay = String(caredAt).split('T')[0];
+      if (!base || caredDay > base) base = caredDay;
+    }
     if (!base) return 0;
     const baseIdx = dateIdx(base), todayIdx = dateIdx(todayStr());
     const rawGap = Math.max(0, todayIdx - baseIdx);
@@ -1938,8 +1947,9 @@ function MainApp({ user, toast, onSignOut }) {
       !p.hatched_at && petDays(h.id) >= HATCH_DAYS
     );
     // 只有「已孵化」的寵物會餓死；還沒破殼的蛋只是停在原地等你回來
+    // 死亡不再自動重生：偵測到 dead 且還沒標記 died_at 的，只寫 died_at，交由玩家選擇復活或重生
     const toDie = hatchedPets.filter(({ h, p }) =>
-      p.hatched_at && p.species_tier !== 'egg' && petHealthOf(h) === 'dead'
+      p.hatched_at && p.species_tier !== 'egg' && !p.died_at && petHealthOf(h) === 'dead'
     );
     if (!missing.length && !toHatch.length && !toDie.length) return;
     petSyncing.current = true;
@@ -1958,32 +1968,11 @@ function MainApp({ user, toast, onSignOut }) {
           xp: petXpOf(h, p),
         });
       }
-      // 死亡 → 留下紀念、保留 30% 經驗、換新花色重新孵蛋
-      const gone = [];
+      // 死亡 → 只標記 died_at（不重生、不寫 memorials）；復活才不算一次死亡
       for (const { h, p } of toDie) {
-        const lived = petDays(h.id);
-        const keptXp = Math.floor(petXpOf(h, p) * 0.3);
-        const memorials = [
-          ...(Array.isArray(p.memorials) ? p.memorials : []),
-          { species_key: p.species_key, tier: p.species_tier, days: lived, hue: p.hue, pattern: p.pattern, died_at: new Date().toISOString() },
-        ];
-        const seed = `${h.id}:${memorials.length}`; // 新蛋換花色，穩定不隨機
-        await supa.patch('pets', `id=eq.${p.id}`, {
-          memorials,
-          xp_base: keptXp,
-          xp: keptXp,
-          revived_at: new Date().toISOString(),
-          hatched_at: null,
-          gift_log: [],
-          species_tier: 'egg',
-          species_key: null,
-          hue: hueFromId(seed),
-          pattern: patternFromId(seed),
-        });
-        gone.push({ name: speciesLabel(p.species_tier, p.species_key), days: lived, habit: h.title });
+        await supa.patch('pets', `id=eq.${p.id}`, { died_at: new Date().toISOString() });
       }
       if (toHatch.length) { celebRef.current?.fire(); toast('蛋孵化了！小夥伴誕生 🐣'); }
-      if (gone.length) setMourn(gone);
       await load();
     } catch (e) { console.error('pet sync failed:', e); setPetsError(true); }
     finally { petSyncing.current = false; }
@@ -2017,6 +2006,71 @@ function MainApp({ user, toast, onSignOut }) {
         toast(`${gift.emoji} 餵食成功，牠很開心！`);
       }
     } catch { toast('餵食失敗'); }
+  };
+
+  // 🩹 緊急照顧：花幣重置死亡倒數（只記 rescue_spent，不加 xp、不碰 coins_spent）
+  const careForPet = async (h) => {
+    const p = h ? petOf(h.id) : null;
+    if (!h || !p) return;
+    const health = petHealthOf(h);
+    if (health !== 'hungry' && health !== 'weak') return;              // ok / dead / 蛋期不可照顧
+    if (totalPetCoins < CARE_COST) { toast('寵物幣不夠，先去打幾天卡吧 🌱'); return; }
+    if (p.last_cared_at && String(p.last_cared_at).split('T')[0] === todayStr()) {
+      toast('今天已經照顧過了，明天再來或先打卡吧'); return;             // 每隻每天限一次
+    }
+    try {
+      await supa.patch('pets', `id=eq.${p.id}`, {
+        last_cared_at: new Date().toISOString(),
+        rescue_spent: (Number(p.rescue_spent) || 0) + CARE_COST,
+      });
+      await load();
+      toast('照顧好了，倒數重置 💗');
+    } catch { toast('照顧失敗，請稍後再試'); }
+  };
+
+  // 🥚 免費重生：留紀念、保留 30% 經驗、換新花色重新孵蛋（掉 70% 進度）
+  const rebirthPet = async (h, p) => {
+    if (!h || !p) return;
+    const lived = petDays(h.id);
+    const keptXp = Math.floor(petXpOf(h, p) * 0.3);
+    const memorials = [
+      ...(Array.isArray(p.memorials) ? p.memorials : []),
+      { species_key: p.species_key, tier: p.species_tier, days: lived, hue: p.hue, pattern: p.pattern, died_at: p.died_at || new Date().toISOString() },
+    ];
+    const seed = `${h.id}:${memorials.length}`; // 新蛋換花色，穩定不隨機
+    try {
+      await supa.patch('pets', `id=eq.${p.id}`, {
+        memorials,
+        xp_base: keptXp,
+        xp: keptXp,
+        revived_at: new Date().toISOString(),
+        hatched_at: null,
+        gift_log: [],
+        species_tier: 'egg',
+        species_key: null,
+        hue: hueFromId(seed),
+        pattern: patternFromId(seed),
+        died_at: null,
+      });
+      await load();
+      toast('新的蛋開始孵了，牠會記得你學過的事 🥚');
+    } catch { toast('重生失敗，請稍後再試'); }
+  };
+
+  // 💰 付費復活：保留全部進度（tier/xp/gift_log），只記 rescue_spent、重置倒數
+  const revivePet = async (h, p) => {
+    if (!h || !p) return;
+    const cost = REVIVE_COST[p.species_tier] ?? REVIVE_COST.insect;
+    if (totalPetCoins < cost) { toast('寵物幣不夠，沒辦法復活牠'); return; }
+    try {
+      await supa.patch('pets', `id=eq.${p.id}`, {
+        died_at: null,
+        last_cared_at: new Date().toISOString(),
+        rescue_spent: (Number(p.rescue_spent) || 0) + cost,
+      });
+      await load();
+      toast('牠回來了，謝謝你沒放棄牠 🕯️→💗');
+    } catch { toast('復活失敗，請稍後再試'); }
   };
 
   const toggleCheckin = async (hId, done, origin) => {
@@ -2369,6 +2423,13 @@ function MainApp({ user, toast, onSignOut }) {
         const daysToHungry = Math.max(0, 3 * vacMult - gap);
         const daysToDead = Math.max(0, 9 * vacMult - gap);
         const rebirths = Array.isArray(p.memorials) ? p.memorials.length : 0;
+        // 死亡選擇 / 緊急照顧狀態
+        const dead = hatched && !!p.died_at;
+        const reviveCost = REVIVE_COST[p.species_tier] ?? REVIVE_COST.insect;
+        const canRevive = totalPetCoins >= reviveCost;
+        const canCare = !dead && (health === 'hungry' || health === 'weak');
+        const caredToday = !!p.last_cared_at && String(p.last_cared_at).split('T')[0] === todayStr();
+        const careBlocked = caredToday || totalPetCoins < CARE_COST;
         return (
           <div key={h.id} className="cozy-card" style={{ ...S.card, textAlign: 'center', paddingTop: 18 }}>
             <div style={{ display: 'flex', justifyContent: 'center' }}>
@@ -2383,8 +2444,8 @@ function MainApp({ user, toast, onSignOut }) {
 
             <div style={{ fontWeight: 600, fontSize: 16, marginTop: 2 }}>{h.title}</div>
 
-            {/* 飢餓／虛弱警示（溫柔但有急迫感） */}
-            {health !== 'ok' && (
+            {/* 飢餓／虛弱警示（溫柔但有急迫感）；死亡時改走下方「死亡選擇」 */}
+            {health !== 'ok' && !dead && (
               <div style={{
                 margin: '10px auto 0', maxWidth: 300, padding: '9px 14px',
                 borderRadius: '15px 12px 16px 13px', fontSize: 13, fontWeight: 500,
@@ -2393,8 +2454,40 @@ function MainApp({ user, toast, onSignOut }) {
                 border: `1.5px solid ${health === 'weak' ? '#EFC4B2' : '#EFE0B4'}`,
               }}>
                 {health === 'weak'
-                  ? '🥺 牠快撐不住了——今天打一次卡就能救牠'
+                  ? '🥺 牠快撐不住了——今天打一次卡，或緊急照顧就能救牠'
                   : '🍚 肚子餓了，開一格陪陪牠吧'}
+              </div>
+            )}
+
+            {/* 死亡選擇：復活（保留全部）vs 重新開始（免費，保留 30%） */}
+            {dead && (
+              <div style={{ margin: '12px auto 0', maxWidth: 320 }}>
+                <div style={{
+                  padding: '11px 14px', borderRadius: '15px 12px 16px 13px', fontSize: 13, lineHeight: 1.8,
+                  background: '#EFE7E2', color: C.cinnamon, border: '1.5px solid #E2D6CE',
+                }}>
+                  🕯️ <strong>{speciesLabel(p.species_tier, p.species_key)}</strong> 離開了，陪你走了 {days} 天。<br />
+                  復活會把牠原封不動帶回來（保留全部進度）；重新開始則化作新蛋，只保留 30% 成長。
+                </div>
+                <button
+                  disabled={!canRevive}
+                  onClick={() => { if (canRevive) revivePet(h, p); }}
+                  style={{
+                    ...S.btn('primary'), width: '100%', marginTop: 10,
+                    opacity: canRevive ? 1 : 0.5, cursor: canRevive ? 'pointer' : 'default',
+                  }}
+                >
+                  💰 復活（保留全部進度）· {reviveCost} 🪙
+                </button>
+                {!canRevive && (
+                  <div style={{ ...S.muted, fontSize: 11, marginTop: 4 }}>金幣不足（需要 {reviveCost} 🪙）</div>
+                )}
+                <button
+                  onClick={() => rebirthPet(h, p)}
+                  style={{ ...S.btn('secondary'), width: '100%', marginTop: 8 }}
+                >
+                  🥚 重新開始（免費，只保留 30% 成長）
+                </button>
               </div>
             )}
 
@@ -2416,6 +2509,7 @@ function MainApp({ user, toast, onSignOut }) {
                   <span style={{ ...S.chip(false), padding: '5px 12px', fontSize: 12 }}>{STAGE_LABEL[stage]}體型</span>
                 </div>
                 <div style={{ ...S.muted, fontSize: 12 }}>XP {xp} · 已收到 {log.length} 份禮物 · 打卡 {days} 次 · 難度 {diffLabel(h.difficulty)}（xp ×{diffMult(h.difficulty)}）</div>
+                {!dead && <>
                 {/* 健康狀態 + 打卡倒數 + 重生次數 */}
                 <div style={{ display: 'flex', gap: 6, justifyContent: 'center', flexWrap: 'wrap', marginTop: 8 }}>
                   <span style={{
@@ -2449,23 +2543,46 @@ function MainApp({ user, toast, onSignOut }) {
                         ].filter(Boolean).join('、') || '條件已達成，下次餵食就會進化 🎉'}`}
                   </div>
                 )}
+                </>}
               </>
             )}
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 16, justifyContent: 'center' }}>
-              <span style={{ fontSize: 13, color: C.honey, fontWeight: 600 }}>🪙 {coins}</span>
-              <button
-                style={{
-                  ...S.btn(hatched ? 'primary' : 'secondary'),
-                  padding: '9px 18px', fontSize: 13,
-                  opacity: hatched ? 1 : 0.55,
-                  cursor: hatched ? 'pointer' : 'default',
-                }}
-                onClick={() => { if (hatched) setGiftHabitId(h.id); }}
-              >
-                {!hatched ? '🥚 孵化後才能餵食' : '🎁 餵食'}
-              </button>
-            </div>
+            {/* 死亡時不顯示餵食／照顧（改走上方死亡選擇） */}
+            {!dead && (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 16, justifyContent: 'center', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 13, color: C.honey, fontWeight: 600 }}>🪙 {coins}</span>
+                  {canCare && (
+                    <button
+                      disabled={careBlocked}
+                      onClick={() => { if (!careBlocked) careForPet(h); }}
+                      style={{
+                        ...S.btn('warm'), padding: '9px 18px', fontSize: 13,
+                        opacity: careBlocked ? 0.5 : 1, cursor: careBlocked ? 'default' : 'pointer',
+                      }}
+                    >
+                      🩹 緊急照顧（{CARE_COST}🪙）
+                    </button>
+                  )}
+                  <button
+                    style={{
+                      ...S.btn(hatched ? 'primary' : 'secondary'),
+                      padding: '9px 18px', fontSize: 13,
+                      opacity: hatched ? 1 : 0.55,
+                      cursor: hatched ? 'pointer' : 'default',
+                    }}
+                    onClick={() => { if (hatched) setGiftHabitId(h.id); }}
+                  >
+                    {!hatched ? '🥚 孵化後才能餵食' : '🎁 餵食'}
+                  </button>
+                </div>
+                {canCare && careBlocked && (
+                  <div style={{ ...S.muted, fontSize: 11, marginTop: 6 }}>
+                    {caredToday ? '今天已經照顧過了，明天再來或先打卡吧' : `金幣不足（緊急照顧需要 ${CARE_COST} 🪙）`}
+                  </div>
+                )}
+              </>
+            )}
           </div>
         );
       })}
@@ -2941,26 +3058,6 @@ function MainApp({ user, toast, onSignOut }) {
           </Modal>
         );
       })()}
-
-      {/* 哀悼（溫柔、不責備） */}
-      {mourn.length > 0 && (
-        <Modal open title="🕊️ 道別" onClose={() => setMourn([])}>
-          {mourn.map((m, i) => (
-            <p key={i} style={{ fontSize: 15, lineHeight: 2, textAlign: 'center', marginBottom: 10 }}>
-              <strong>{m.name}</strong> 離開了。<br />牠陪你走了 {m.days} 天。
-            </p>
-          ))}
-          <div className="cozy-card" style={{ ...S.card, background: '#E6F2EB', textAlign: 'center' }}>
-            <div style={{ fontSize: 26, marginBottom: 6 }}>🥚</div>
-            <p style={{ fontSize: 13, lineHeight: 1.9, color: C.cinnamon }}>
-              新的蛋已經在孵了。<br />牠會記得你學過的事（保留 30% 成長）。
-            </p>
-          </div>
-          <button style={{ ...S.btn('primary'), width: '100%', marginTop: 4 }} onClick={() => { setMourn([]); setTab('pet'); }}>
-            好好照顧下一隻 🌱
-          </button>
-        </Modal>
-      )}
 
       {/* 進化提示 */}
       {evolveNews && (

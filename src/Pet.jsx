@@ -200,6 +200,11 @@ export function petHealth(gap, weekly = false) {
 }
 export const HEALTH_LABEL = { ok: '健康', hungry: '肚子餓了', weak: '虛弱', dead: '已離開' };
 
+// ── 急救／復活花費 ──────────────────────────────────────
+// 一律記到 pets.rescue_spent，絕不加進 coins_spent（否則付費就能推進進化門檻）。
+export const CARE_COST = 40;                                              // 緊急照顧一次（重置死亡倒數）
+export const REVIVE_COST = { insect: 60, cute: 150, rare: 350, spirit: 700 }; // 依死亡時的 species_tier 計費
+
 /**
  * ISO-8601 週字串 'YYYY-Www'。
  * 以「該週星期四所在的年份」為年，因此跨年（12/29~1/03）自動落到正確的 ISO 年份與週數，

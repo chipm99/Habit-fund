@@ -12,6 +12,8 @@ const COPY_STREAK = [
   '🔥 今晚補一格，紀錄就接著走',
   '🔥 差一步就斷鏈，輕輕開一格',
   '🔥 你的連續還在等你，一格就好',
+  '🔥 連著的手感別斷，今晚一格接上',
+  '🔥 你已經連這麼多天了，今天也別漏掉',
 ];
 const COPY_RESTART = [
   '🌱 今天還空著。5 分鐘，一格就好',
@@ -20,14 +22,26 @@ const COPY_RESTART = [
   '🌱 給自己五分鐘，開一格吧',
   '🌱 一格就好，今天輕輕開始',
   '🌱 今天留了一格空位給你',
+  '🌱 哪怕只是小小一步，今天也值得一格',
+  '🌱 重新開始永遠不嫌晚，就現在',
 ];
 
+// 寵物瀕死：今天不打卡就會離開（最急，點名習慣）
+const COPY_DYING = [
+  '🕯️ 今天不打卡，「{habit}」的夥伴就要離開了…',
+  '🕯️ 最後一晚了——開一格，別讓「{habit}」的牠走',
+  '🕯️ 「{habit}」的小傢伙在倒數了，一次打卡就能留住牠',
+  '🕯️ 再不打卡，「{habit}」的夥伴撐不過今晚',
+  '🕯️ 牠快不行了，「{habit}」只要一格就能救回來',
+];
 // 寵物虛弱：今晚不打卡就會離開（最後機會，溫柔但急）
 const COPY_WEAK = [
   '🥺 小傢伙快撐不住了——今晚打一次卡就能救牠',
   '🥺 牠等你等到沒力氣了，一格就能把牠救回來',
   '🥺 今晚是最後機會，開一格陪陪牠',
   '🥺 牠還在等你回來，一次打卡就夠了',
+  '🥺 「{habit}」的牠虛弱了，今晚一格就能好轉',
+  '🥺 別讓「{habit}」的夥伴再撐下去，開一格吧',
 ];
 // 寵物肚子餓
 const COPY_HUNGRY = [
@@ -35,6 +49,8 @@ const COPY_HUNGRY = [
   '🍚 牠肚子咕嚕叫了，今天陪牠一下吧',
   '🍚 小夥伴在等飯吃，一格就好',
   '🍚 牠有點餓了，開一格就會好起來',
+  '🍚 「{habit}」的小傢伙餓了，開一格餵餵牠',
+  '🍚 「{habit}」的夥伴想你了，順手打個卡吧',
 ];
 
 // 飢餓門檻（與 App/Pet.jsx 的 petHealth 同一把尺）：每日 3 餓 / 6 虛弱 / 9 死；每週 ×2
@@ -100,9 +116,9 @@ export default async function handler(req, res) {
     const windowStart = taipeiDate(new Date(Date.now() - 20 * 86400000));
     const [subs, activeHabits, recentCheckins, petRows, vacationRows] = await Promise.all([
       sb('push_subscriptions?select=user_id,subscription,endpoint'),
-      sb('habits?is_active=eq.true&select=id,user_id,frequency'),
+      sb('habits?is_active=eq.true&select=id,user_id,frequency,title'),
       sb(`checkins?checked_date=gte.${windowStart}&select=user_id,habit_id,checked_date`),
-      sb('pets?select=user_id,habit_id,species_tier,hatched_at').catch(() => []), // pets.sql 未執行時降級為一般提醒
+      sb('pets?select=user_id,habit_id,species_tier,hatched_at,last_cared_at,died_at').catch(() => []), // pets.sql 未執行時降級為一般提醒
       sb(`vacations?end_date=gte.${windowStart}&select=user_id,start_date,end_date`).catch(() => []), // vacations.sql 未執行時當作沒休假
     ]);
 
@@ -138,20 +154,37 @@ export default async function handler(req, res) {
       if (!prev || c.checked_date > prev) lastByHabit.set(c.habit_id, c.checked_date);
     }
 
-    // 每個 user 最緊急的寵物狀態（只看已孵化、還活著的；死掉的跳過不鞭屍）
-    const urgent = new Map(); // user_id → 'weak' | 'hungry'
+    // 每個 user 最緊急的寵物（只看已孵化、還活著的；死掉的跳過不鞭屍）
+    // 優先序 dying > weak > hungry，並記住該寵物的習慣名，推播文案帶 {habit}
+    const LEVEL_RANK = { hungry: 1, weak: 2, dying: 3 };
+    const urgent = new Map(); // user_id → { level, habit }
     for (const p of petRows || []) {
       if (!p.hatched_at || p.species_tier === 'egg') continue;
+      if (p.died_at) continue; // 已標記死亡、等玩家選擇復活/重生，不再推播
       const habit = habitById.get(p.habit_id);
       if (!habit) continue;
-      const last = lastByHabit.get(p.habit_id);
-      // gap 扣掉休假天數（[最後打卡日+1 .. 今天]），休假中的寵物不會被誤判為餓/虛弱
+      // 基準日取 max(最後打卡日, last_cared_at 當天)，與前端 petGap 同一把尺（急救/復活會重置倒數）
+      let last = lastByHabit.get(p.habit_id) || null;
+      const caredDay = p.last_cared_at ? String(p.last_cared_at).split('T')[0] : null;
+      if (caredDay && (!last || caredDay > last)) last = caredDay;
+      // gap 扣掉休假天數（[基準日+1 .. 今天]），休假中的寵物不會被誤判為餓/虛弱
       const rawGap = last ? dayDiff(today, last) : 99;
       const vacDays = last ? vacDaysInRange(vacByUser.get(p.user_id), toIdx(last) + 1, toIdx(today)) : 0;
       const gap = Math.max(0, rawGap - vacDays);
-      const state = healthOf(gap, habit.frequency && habit.frequency.type === 'weekly');
-      if (state === 'weak') urgent.set(p.user_id, 'weak');
-      else if (state === 'hungry' && urgent.get(p.user_id) !== 'weak') urgent.set(p.user_id, 'hungry');
+      const weekly = habit.frequency && habit.frequency.type === 'weekly';
+      const m = weekly ? 2 : 1;
+      const base = healthOf(gap, weekly);
+      if (base === 'dead') continue;                       // 已離開，不鞭屍
+      const daysToDead = 9 * m - gap;
+      let level;
+      if (daysToDead >= 1 && daysToDead <= 2) level = 'dying'; // 1~2 天內會死 → 瀕死
+      else if (base === 'weak') level = 'weak';
+      else if (base === 'hungry') level = 'hungry';
+      else continue;                                       // 健康，不推寵物提醒
+      const cur = urgent.get(p.user_id);
+      if (!cur || LEVEL_RANK[level] > LEVEL_RANK[cur.level]) {
+        urgent.set(p.user_id, { level, habit: habit.title || '' });
+      }
     }
 
     let sent = 0, skipped = 0, pruned = 0, failed = 0;
@@ -161,14 +194,16 @@ export default async function handler(req, res) {
       const uid = s.user_id;
       if (!usersWithHabits.has(uid)) { skipped++; continue; }
 
-      // 寵物狀態優先：虛弱 > 肚子餓 > 一般提醒（一般提醒仍只在今天零打卡時送）
-      const state = urgent.get(uid);
-      let pool;
-      if (state === 'weak') pool = COPY_WEAK;
-      else if (state === 'hungry') pool = COPY_HUNGRY;
-      else if (checkedToday.has(uid)) { skipped++; continue; }
+      // 寵物狀態優先：瀕死 > 虛弱 > 肚子餓 > 一般提醒（一般提醒仍只在今天零打卡時送）
+      const u = urgent.get(uid);
+      let pool, habitName = '';
+      if (u) {
+        habitName = u.habit || '';
+        pool = u.level === 'dying' ? COPY_DYING : u.level === 'weak' ? COPY_WEAK : COPY_HUNGRY;
+      } else if (checkedToday.has(uid)) { skipped++; continue; }
       else pool = checkedYesterday.has(uid) ? COPY_STREAK : COPY_RESTART;
-      const body = pool[doy % pool.length];
+      let body = pool[doy % pool.length];
+      body = body.replace(/\{habit\}/g, habitName); // 文案裡的 {habit} 換成該習慣 title
       const payload = JSON.stringify({ title: '好習慣基金', body, data: { url: '/' } });
 
       try {
