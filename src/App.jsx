@@ -137,13 +137,17 @@ function getStreak(habitId, checkins) {
   if (!dates.length) return 0;
   let streak = 0;
   let cur = new Date();
+  cur.setHours(0, 0, 0, 0);
   for (const ds of dates) {
     const d = new Date(ds + 'T00:00:00');
-    cur.setHours(0, 0, 0, 0);
     d.setHours(0, 0, 0, 0);
     const diff = Math.round((cur - d) / 86400000);
-    if (diff === 0 || diff === streak) { streak++; cur = new Date(d); cur.setDate(cur.getDate() - 1); }
-    else break;
+    // Allow streak to start from today (diff=0) or yesterday (diff=1) if not yet checked in today
+    if (diff === 0 || (streak === 0 && diff === 1)) {
+      streak++;
+      cur = new Date(d);
+      cur.setDate(cur.getDate() - 1);
+    } else break;
   }
   return streak;
 }
@@ -161,6 +165,19 @@ function getStreakAsOf(habitId, checkins, asOf) {
   }
   return streak;
 }
+
+// Returns last N days [{date, checked, isToday}] for a habit
+const getRecentDays = (habitId, checkins, n = 7) => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const checked = new Set(checkins.filter(c => c.habit_id === habitId).map(c => c.checked_date));
+  return Array.from({ length: n }, (_, i) => {
+    const d = new Date(today);
+    d.setDate(today.getDate() - (n - 1 - i));
+    const ds = d.toISOString().split('T')[0];
+    return { date: ds, checked: checked.has(ds), isToday: i === n - 1 };
+  });
+};
 
 // ── Toast ────────────────────────────────────────────────
 function useToast() {
@@ -1940,11 +1957,18 @@ function MainApp({ user, toast, onSignOut }) {
 
   const toggleCheckin = async (hId, done, origin) => {
     try {
-      if (done) await supa.del('checkins', `habit_id=eq.${hId}&checked_date=eq.${todayStr()}`);
-      else {
+      if (done) {
+        const streak = getStreak(hId, checkins);
+        if (streak > 1 && !window.confirm(`取消打卡會中斷你的 ${streak} 天連續紀錄，確定嗎？`)) return;
+        await supa.del('checkins', `habit_id=eq.${hId}&checked_date=eq.${todayStr()}`);
+      } else {
         await supa.post('checkins', { habit_id: hId, user_id: user.id, checked_date: todayStr() });
         if (origin) celebRef.current?.fire(origin.x, origin.y); // 🎉 hand-drawn particle burst
-        toast('打卡成功！繼續保持 🌟');
+        const newCheckins = [...checkins, { habit_id: hId, checked_date: todayStr() }];
+        const newStreak = getStreak(hId, newCheckins);
+        const milestone = [7, 14, 30, 100].find(m => newStreak === m);
+        if (milestone) toast(`🎉 哇！連續 ${milestone} 天！太厲害了！`);
+        else toast('打卡成功！繼續保持 🌟');
       }
       await load();
     } catch { toast('操作失敗'); }
@@ -2042,6 +2066,25 @@ function MainApp({ user, toast, onSignOut }) {
           <p>去「習慣」頁面新增你的第一個習慣吧！</p>
         </div>
       ) : (<>
+        {(() => {
+          const atRisk = habits.filter(h => {
+            if (h.frequency?.type === 'weekly') return false;
+            if (todayCheckins.has(h.id)) return false;
+            return getStreak(h.id, checkins) > 0;
+          });
+          if (!atRisk.length) return null;
+          return (
+            <div style={{ background: '#FFF8EC', border: '1px solid #F5C97A', borderRadius: 14, padding: '14px 18px', marginBottom: 14, display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+              <div style={{ fontSize: 22, flexShrink: 0 }}>🔥</div>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 14, color: '#92610A', marginBottom: 4 }}>連續天數待確認</div>
+                <div style={{ fontSize: 13, color: '#B5935A', lineHeight: 1.5 }}>
+                  {atRisk.map(h => `「${h.title}」${getStreak(h.id, checkins)} 天`).join('、')} 今天還沒打卡，記得完成哦！
+                </div>
+              </div>
+            </div>
+          );
+        })()}
         <div className="cozy-card" style={S.card}>
           <div style={{ ...S.row, marginBottom: 14 }}>
             <div>
@@ -2124,7 +2167,19 @@ function MainApp({ user, toast, onSignOut }) {
                             })()}
                           </div>
                         ) : (
-                          <div style={{ fontSize: 12, color: '#A08B7A', marginTop: 2 }}>NT${h.fund_per_day}/天 · {diffLabel(h.difficulty)}</div>
+                          <>
+                            <div style={{ fontSize: 12, color: '#8A857F', marginTop: 2 }}>NT${h.fund_per_day}/天 · {diffLabel(h.difficulty)}</div>
+                            <div style={{ display: 'flex', gap: 3, marginTop: 6 }}>
+                              {getRecentDays(h.id, checkins).map(({ date, checked, isToday }) => (
+                                <div key={date} title={date} style={{
+                                  width: 10, height: 10, borderRadius: 3,
+                                  background: checked ? '#2D6A4F' : '#E8E4DF',
+                                  outline: isToday ? '2px solid #B5935A' : 'none',
+                                  outlineOffset: 1,
+                                }} />
+                              ))}
+                            </div>
+                          </>
                         )}
                       </div>
                       {streak > 0 && (
@@ -2376,6 +2431,19 @@ function MainApp({ user, toast, onSignOut }) {
                   <span style={{ ...S.muted, fontSize: 12 }}>📅 累計 {total} 次</span>
                   <span style={{ ...S.muted, fontSize: 12 }}>💰 NT${chainFundCheckins.length * h.fund_per_day}</span>
                 </div>
+                {!isWeekly && (
+                  <div style={{ display: 'flex', gap: 3, marginTop: 10 }}>
+                    {getRecentDays(h.id, checkins).map(({ date, checked, isToday }) => (
+                      <div key={date} title={date} style={{
+                        width: 12, height: 12, borderRadius: 3,
+                        background: checked ? '#2D6A4F' : '#E8E4DF',
+                        outline: isToday ? '2px solid #B5935A' : 'none',
+                        outlineOffset: 1,
+                      }} />
+                    ))}
+                    <span style={{ fontSize: 11, color: '#B5935A', marginLeft: 6, alignSelf: 'center' }}>近 7 天</span>
+                  </div>
+                )}
                 {(!h.frequency || h.frequency?.type === 'daily') && (
                   <div style={{ marginTop: 10, borderTop: '1px solid #EADFCF', paddingTop: 10 }}>
                     {h.chain_mode ? (
@@ -2645,6 +2713,7 @@ function MainApp({ user, toast, onSignOut }) {
           <div style={{ fontWeight: 500, marginBottom: 14, fontSize: 15 }}>🗓️ 打卡月曆</div>
           <MonthCalendar habits={habits} checkins={checkins} />
         </div>
+
         {v.goals?.filter(g => g.text?.trim()).length > 0 && (
           <div className="cozy-card" style={{ ...S.card, marginTop: 14 }}>
             <div style={{ fontWeight: 500, marginBottom: 14 }}>你的目標</div>
