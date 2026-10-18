@@ -37,11 +37,11 @@ const COPY_HUNGRY = [
   '🍚 牠有點餓了，開一格就會好起來',
 ];
 
-// 飢餓門檻（與 App/Pet.jsx 的 petHealth 同一把尺）：每日 3 餓 / 5 虛弱 / 6 死；每週 ×2
+// 飢餓門檻（與 App/Pet.jsx 的 petHealth 同一把尺）：每日 3 餓 / 6 虛弱 / 9 死；每週 ×2
 const healthOf = (gap, weekly) => {
   const m = weekly ? 2 : 1;
-  if (gap >= 6 * m) return 'dead';
-  if (gap >= 5 * m) return 'weak';
+  if (gap >= 9 * m) return 'dead';
+  if (gap >= 6 * m) return 'weak';
   if (gap >= 3 * m) return 'hungry';
   return 'ok';
 };
@@ -98,12 +98,33 @@ export default async function handler(req, res) {
   try {
     // 20 天視窗：足以算出所有還活著的寵物的 gap（超過 20 天沒打卡的一定已經餓死）
     const windowStart = taipeiDate(new Date(Date.now() - 20 * 86400000));
-    const [subs, activeHabits, recentCheckins, petRows] = await Promise.all([
+    const [subs, activeHabits, recentCheckins, petRows, vacationRows] = await Promise.all([
       sb('push_subscriptions?select=user_id,subscription,endpoint'),
       sb('habits?is_active=eq.true&select=id,user_id,frequency'),
       sb(`checkins?checked_date=gte.${windowStart}&select=user_id,habit_id,checked_date`),
       sb('pets?select=user_id,habit_id,species_tier,hatched_at').catch(() => []), // pets.sql 未執行時降級為一般提醒
+      sb(`vacations?end_date=gte.${windowStart}&select=user_id,start_date,end_date`).catch(() => []), // vacations.sql 未執行時當作沒休假
     ]);
+
+    // 休假：以 user 分組，gap 計算時扣掉落在休假區間的天數（與前端 petGap 同一把尺）
+    const toIdx = (s) => Math.round(Date.parse(s + 'T00:00:00Z') / 86400000);
+    const vacByUser = new Map();
+    for (const v of vacationRows || []) {
+      if (!v.start_date || !v.end_date) continue;
+      if (!vacByUser.has(v.user_id)) vacByUser.set(v.user_id, []);
+      vacByUser.get(v.user_id).push(v);
+    }
+    // [winA..winB]（含兩端，日序號）內落在任一休假區間的天數（去重）
+    const vacDaysInRange = (vacs, winA, winB) => {
+      if (!vacs || winB < winA) return 0;
+      const covered = new Set();
+      for (const v of vacs) {
+        const a = Math.max(winA, toIdx(v.start_date));
+        const b = Math.min(winB, toIdx(v.end_date));
+        for (let dd = a; dd <= b; dd++) covered.add(dd);
+      }
+      return covered.size;
+    };
 
     const usersWithHabits = new Set((activeHabits || []).map(h => h.user_id));
     const habitById = new Map((activeHabits || []).map(h => [h.id, h]));
@@ -124,7 +145,10 @@ export default async function handler(req, res) {
       const habit = habitById.get(p.habit_id);
       if (!habit) continue;
       const last = lastByHabit.get(p.habit_id);
-      const gap = last ? dayDiff(today, last) : 99;
+      // gap 扣掉休假天數（[最後打卡日+1 .. 今天]），休假中的寵物不會被誤判為餓/虛弱
+      const rawGap = last ? dayDiff(today, last) : 99;
+      const vacDays = last ? vacDaysInRange(vacByUser.get(p.user_id), toIdx(last) + 1, toIdx(today)) : 0;
+      const gap = Math.max(0, rawGap - vacDays);
       const state = healthOf(gap, habit.frequency && habit.frequency.type === 'weekly');
       if (state === 'weak') urgent.set(p.user_id, 'weak');
       else if (state === 'hungry' && urgent.get(p.user_id) !== 'weak') urgent.set(p.user_id, 'hungry');

@@ -115,10 +115,10 @@ export function pickSpecies(tier, hue) {
 }
 
 // ── 成長 ────────────────────────────────────────────────
-export const HATCH_AT = 7;             // 打卡 7 次孵化（唯一真相來源）
+export const HATCH_AT = 4;             // 打卡 4 次孵化（唯一真相來源）
 export const HATCH_DAYS = HATCH_AT;    // 舊名保留：App.jsx 匯入的是這個
-export const CRACK1_AT = 5;            // 第 5 次出現第一道裂痕
-export const CRACK2_AT = 6;            // 第 6 次出現第二道裂痕
+export const CRACK1_AT = 2;            // 第 2 次出現第一道裂痕
+export const CRACK2_AT = 3;            // 第 3 次出現第二道裂痕
 export const STAGE_LABEL = ['幼', '中', '大', '成熟'];
 export const stageIndex = (days) => (days >= 120 ? 3 : days >= 60 ? 2 : days >= 30 ? 1 : 0);
 // 成長階段用「viewBox 留白」控制大小，維持整格像素不變形
@@ -144,9 +144,9 @@ export const petXp = (days, giftLog = [], mult = 1, xpBase = 0) =>
 
 // 各階門檻：xp + 累計投入金幣（coins_spent）+ 高稀有度禮物「份數」（不看平均，只看有沒有給過好東西）
 export const TIER_REQ = {
-  cute: { xp: 60, coins: 100 },
-  rare: { xp: 150, coins: 400, highGifts: 3, highRarity: 2 },
-  spirit: { xp: 300, coins: 1000, highGifts: 3, highRarity: 4 },
+  cute: { xp: 40, coins: 60 },
+  rare: { xp: 100, coins: 200, highGifts: 2, highRarity: 2 },
+  spirit: { xp: 220, coins: 500, highGifts: 2, highRarity: 4 },
 };
 
 // 依最低稀有度門檻，數出禮物紀錄裡有幾份達標（不是平均，只是計數）
@@ -190,11 +190,11 @@ export function nextTierGoal(current, xp, giftLog = [], difficulty = 'medium', c
 
 // ── 飢餓與死亡 ──────────────────────────────────────────
 // gap = 今天 − 最後打卡日（從未打卡則自 created_at 起算）
-// 每日習慣：0-2 健康 / 3-4 餓 / 5 虛弱 / ≥6 死亡；每週習慣門檻 ×2
+// 每日習慣：0-2 健康 / 3-5 餓 / 6-8 虛弱 / ≥9 死亡；每週習慣門檻 ×2
 export function petHealth(gap, weekly = false) {
   const m = weekly ? 2 : 1;
-  if (gap >= 6 * m) return 'dead';
-  if (gap >= 5 * m) return 'weak';
+  if (gap >= 9 * m) return 'dead';
+  if (gap >= 6 * m) return 'weak';
   if (gap >= 3 * m) return 'hungry';
   return 'ok';
 }

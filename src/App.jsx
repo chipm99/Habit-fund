@@ -1181,8 +1181,8 @@ function EditHabitModal({ habit, pet, goalOptions, onClose, onSaved, toast }) {
 
   const freqChanged = freqType !== origFreqType;
   const diffChanged = difficulty !== habit.difficulty;
-  // 與 Pet.jsx petHealth() 的死亡門檻一致：gap >= 6 * (weekly ? 2 : 1)
-  const deadDays = freqType === 'weekly' ? 12 : 6;
+  // 與 Pet.jsx petHealth() 的死亡門檻一致：gap >= 9 * (weekly ? 2 : 1)
+  const deadDays = freqType === 'weekly' ? 18 : 9;
 
   const save = async () => {
     if (!title.trim()) { toast('請填寫習慣名稱'); return; }
@@ -1720,6 +1720,8 @@ function MainApp({ user, toast, onSignOut }) {
   // ── 電子寵物 ──
   const [pets, setPets] = useState([]);
   const [petsError, setPetsError] = useState(false); // pets 表還沒建（supabase/pets.sql 未執行）
+  const [vacations, setVacations] = useState([]);    // 休假區間 [{id,start_date,end_date}]（supabase/vacations.sql）
+  const [vacEndInput, setVacEndInput] = useState(''); // 「開始休假」結束日期選擇
   const [giftHabitId, setGiftHabitId] = useState(null); // 禮物商店 modal 對應的習慣
   const [evolveNews, setEvolveNews] = useState(null);   // {from, to} 進化提示
   const [mourn, setMourn] = useState([]);               // [{name, days, habit}] 哀悼 modal
@@ -1768,6 +1770,11 @@ function MainApp({ user, toast, onSignOut }) {
       const pt = await supa.get('pets', `user_id=eq.${user.id}`);
       setPets(pt || []); setPetsError(false);
     } catch { setPets([]); setPetsError(true); }
+    // vacations 同樣單獨抓：若 supabase/vacations.sql 還沒執行，整頁不受影響，fallback 空陣列
+    try {
+      const vac = await supa.get('vacations', `user_id=eq.${user.id}&order=start_date.asc`);
+      setVacations(vac || []);
+    } catch { setVacations([]); }
   }, [user.id]);
 
   const detectChainBreaks = useCallback(async () => {
@@ -1852,18 +1859,75 @@ function MainApp({ user, toast, onSignOut }) {
   const petCoins = (h) => totalChecks(h.id) * h.fund_per_day - (Number(petOf(h.id)?.coins_spent) || 0);
   const totalPetCoins = habits.reduce((s, h) => s + petCoins(h), 0);
 
-  // gap = 今天 − 最後打卡日（從未打卡則自 created_at 起算）
+  // ── 休假扣除工具 ──────────────────────────────────────
+  const dateIdx = (s) => Math.round(new Date(s + 'T00:00:00') / 86400000); // 日期字串 → 日序號
+  // [winA..winB]（含兩端，日序號）內落在任一休假區間的天數（Set 去重，避免重疊段重複計）
+  const vacationDaysInIdxRange = (winA, winB) => {
+    if (winB < winA || !vacations.length) return 0;
+    const covered = new Set();
+    for (const v of vacations) {
+      if (!v.start_date || !v.end_date) continue;
+      const a = Math.max(winA, dateIdx(v.start_date));
+      const b = Math.min(winB, dateIdx(v.end_date));
+      for (let d = a; d <= b; d++) covered.add(d);
+    }
+    return covered.size;
+  };
+
+  // gap = 今天 − 最後打卡日（從未打卡則自 created_at 起算），再扣掉落在休假區間的天數
   const petGap = (h) => {
     const dates = checkins.filter(c => c.habit_id === h.id).map(c => c.checked_date).sort();
     const base = dates.length ? dates[dates.length - 1] : (h.created_at || '').split('T')[0];
     if (!base) return 0;
-    return Math.max(0, Math.round((new Date(todayStr() + 'T00:00:00') - new Date(base + 'T00:00:00')) / 86400000));
+    const baseIdx = dateIdx(base), todayIdx = dateIdx(todayStr());
+    const rawGap = Math.max(0, todayIdx - baseIdx);
+    // 扣掉 [最後打卡日+1 .. 今天] 期間內落在休假的天數，使寵物休假期間不會變餓/死
+    const vacDays = vacationDaysInIdxRange(baseIdx + 1, todayIdx);
+    return Math.max(0, rawGap - vacDays);
+  };
+
+  // 今天是否正在休假中（給 TODAY banner 與額度顯示用）
+  const todayIsVacation = (() => {
+    const t = dateIdx(todayStr());
+    return vacations.find(v => v.start_date && v.end_date && dateIdx(v.start_date) <= t && t <= dateIdx(v.end_date)) || null;
+  })();
+
+  // 休假額度：最近 365 天內 start_date 計，一年最多 3 次
+  const addDaysStr = (s, n) => {
+    const d = new Date(s + 'T00:00:00'); d.setDate(d.getDate() + n);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+  const vacationsThisYear = vacations.filter(v => v.start_date && dateIdx(todayStr()) - dateIdx(v.start_date) < 365).length;
+  const vacationQuotaLeft = Math.max(0, 3 - vacationsThisYear);
+  // 進行中或未來的休假段（已結束的不列）
+  const activeOrUpcomingVacations = vacations
+    .filter(v => v.end_date && dateIdx(v.end_date) >= dateIdx(todayStr()))
+    .sort((a, b) => dateIdx(a.start_date) - dateIdx(b.start_date));
+  const mdLabel = (s) => { const [, m, d] = s.split('-'); return `${Number(m)}/${Number(d)}`; };
+
+  const startVacation = async () => {
+    const start = todayStr();
+    const end = vacEndInput || start;
+    if (vacationQuotaLeft <= 0) { toast('今年休假額度用完了（一年最多 3 次）🏖️'); return; }
+    const len = dateIdx(end) - dateIdx(start);
+    if (len < 0) { toast('結束日不能早於今天'); return; }
+    if (len > 13) { toast('每段休假最多 14 天（含頭尾）'); return; }
+    try {
+      await supa.post('vacations', { user_id: user.id, start_date: start, end_date: end });
+      await load();
+      setVacEndInput('');
+      toast('休假開始了，好好休息 🏖️');
+    } catch { toast('休假表還沒建立，請先到 Supabase 執行 vacations.sql'); }
+  };
+  const cancelVacation = async (id) => {
+    try { await supa.del('vacations', `id=eq.${id}`); await load(); toast('已取消這段休假'); }
+    catch { toast('取消失敗，請稍後再試'); }
   };
   const petHealthOf = (h) => petHealth(petGap(h), h.frequency?.type === 'weekly');
   const petXpOf = (h, p) =>
     petXp(petDays(h.id), Array.isArray(p?.gift_log) ? p.gift_log : [], diffMult(h.difficulty), p?.xp_base || 0);
 
-  // 載入時：① 沒寵物的 active 習慣自動建蛋 ② days>=14 自動孵化 ③ 餓死→留紀念並重新孵蛋
+  // 載入時：① 沒寵物的 active 習慣自動建蛋 ② 打卡次數 >= HATCH_DAYS 自動孵化 ③ 餓死→留紀念並重新孵蛋
   const syncPets = useCallback(async () => {
     if (petsError || petSyncing.current || !habits.length) return;
     const missing = habits.filter(h => !pets.some(p => p.habit_id === h.id));
@@ -2060,6 +2124,15 @@ function MainApp({ user, toast, onSignOut }) {
         <div style={{ ...S.display, marginTop: 4, fontSize: '1.75rem' }}>{greet}，<em style={{ color: '#5AA37F', fontStyle: 'italic' }}>{user.name}</em> 👋</div>
       </div>
 
+      {todayIsVacation && (
+        <div style={{ background: '#E7F2E3', border: '1px solid #BFE0C8', borderRadius: 14, padding: '12px 18px', marginBottom: 14, display: 'flex', gap: 10, alignItems: 'center' }}>
+          <div style={{ fontSize: 20, flexShrink: 0 }}>🏖️</div>
+          <div style={{ fontSize: 13, color: '#4E8A66', lineHeight: 1.5 }}>
+            休假中（至 {mdLabel(todayIsVacation.end_date)}），寵物暫停計算
+          </div>
+        </div>
+      )}
+
       {habits.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '48px 24px', color: '#A08B7A' }}>
           <div style={{ fontSize: 40, marginBottom: 12 }}>🌱</div>
@@ -2222,6 +2295,45 @@ function MainApp({ user, toast, onSignOut }) {
         </div>
       </div>
 
+      {/* 🏖️ 休假模式 */}
+      <div className="cozy-card" style={{ ...S.card, marginBottom: 14 }}>
+        <div style={{ ...S.row, marginBottom: 10 }}>
+          <div style={{ fontWeight: 600, fontSize: 15 }}>🏖️ 休假模式</div>
+          <div style={{ flex: 1 }} />
+          <div style={{ ...S.muted, fontSize: 12 }}>今年還可休假 {vacationQuotaLeft}/3 次</div>
+        </div>
+        <p style={{ ...S.muted, fontSize: 12, lineHeight: 1.7, marginBottom: 12 }}>
+          休假期間所有寵物暫停飢餓計算，不會變餓或死亡。孵化看打卡次數，不受影響。
+        </p>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: activeOrUpcomingVacations.length ? 12 : 0 }}>
+          <span style={{ ...S.muted, fontSize: 12 }}>結束日</span>
+          <input
+            type="date"
+            value={vacEndInput}
+            min={todayStr()}
+            max={addDaysStr(todayStr(), 13)}
+            onChange={e => setVacEndInput(e.target.value)}
+            style={{ ...S.input, width: 'auto', padding: '7px 10px', fontSize: 13 }}
+          />
+          <button
+            style={{ ...S.btn('primary'), padding: '8px 16px', fontSize: 13, opacity: vacationQuotaLeft > 0 ? 1 : 0.5 }}
+            onClick={startVacation}
+          >
+            開始休假（今天起）
+          </button>
+        </div>
+        {activeOrUpcomingVacations.map(v => (
+          <div key={v.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderTop: '1px solid #EADFCF' }}>
+            <span style={{ fontSize: 13 }}>
+              {mdLabel(v.start_date)} – {mdLabel(v.end_date)}
+              {todayIsVacation && todayIsVacation.id === v.id && <span style={{ color: C.leaf, marginLeft: 8, fontSize: 12 }}>進行中</span>}
+            </span>
+            <div style={{ flex: 1 }} />
+            <button style={{ ...S.btn('secondary'), padding: '6px 12px', fontSize: 12 }} onClick={() => cancelVacation(v.id)}>取消</button>
+          </div>
+        ))}
+      </div>
+
       {petsError && (
         <div className="cozy-card" style={{ ...S.card, background: '#FBF3D8' }}>
           <div style={{ fontWeight: 600, marginBottom: 6 }}>還沒建立寵物資料表 🛠️</div>
@@ -2251,6 +2363,12 @@ function MainApp({ user, toast, onSignOut }) {
         const stage = stageIndex(days);
         const health = hatched ? petHealthOf(h) : 'ok';
         const goal = hatched ? nextTierGoal(p.species_tier, xp, log, h.difficulty, coinsSpent) : null;
+        // 死亡／飢餓倒數（與 petHealth 門檻一致：每日 3 餓 / 9 死，每週 ×2）
+        const vacMult = h.frequency?.type === 'weekly' ? 2 : 1;
+        const gap = hatched ? petGap(h) : 0;
+        const daysToHungry = Math.max(0, 3 * vacMult - gap);
+        const daysToDead = Math.max(0, 9 * vacMult - gap);
+        const rebirths = Array.isArray(p.memorials) ? p.memorials.length : 0;
         return (
           <div key={h.id} className="cozy-card" style={{ ...S.card, textAlign: 'center', paddingTop: 18 }}>
             <div style={{ display: 'flex', justifyContent: 'center' }}>
@@ -2298,6 +2416,27 @@ function MainApp({ user, toast, onSignOut }) {
                   <span style={{ ...S.chip(false), padding: '5px 12px', fontSize: 12 }}>{STAGE_LABEL[stage]}體型</span>
                 </div>
                 <div style={{ ...S.muted, fontSize: 12 }}>XP {xp} · 已收到 {log.length} 份禮物 · 打卡 {days} 次 · 難度 {diffLabel(h.difficulty)}（xp ×{diffMult(h.difficulty)}）</div>
+                {/* 健康狀態 + 打卡倒數 + 重生次數 */}
+                <div style={{ display: 'flex', gap: 6, justifyContent: 'center', flexWrap: 'wrap', marginTop: 8 }}>
+                  <span style={{
+                    ...S.chip(false), padding: '4px 11px', fontSize: 12,
+                    background: health === 'weak' ? '#F8E7DC' : health === 'hungry' ? '#FBF3D8' : '#E7F2E3',
+                    color: health === 'weak' ? C.coralDeep : health === 'hungry' ? C.honey : C.leaf,
+                    border: 'none',
+                  }}>
+                    {health === 'weak' ? '🥀 虛弱' : health === 'hungry' ? '🍚 肚子餓' : '💚 健康'}
+                  </span>
+                  {rebirths > 0
+                    ? <span style={{ ...S.chip(false), padding: '4px 11px', fontSize: 12 }}>🕊️ 重生過 {rebirths} 次</span>
+                    : <span style={{ ...S.chip(false), padding: '4px 11px', fontSize: 12 }}>🌱 初代</span>}
+                </div>
+                <div style={{ ...S.muted, fontSize: 12, marginTop: 6 }}>
+                  {todayIsVacation
+                    ? '休假中，暫停計算 🏖️'
+                    : health === 'ok'
+                      ? `再 ${daysToHungry} 天沒打卡會餓`
+                      : `再 ${daysToDead} 天沒打卡會死`}
+                </div>
                 {/* 進化進度 */}
                 {goal && (
                   <div style={{ ...S.muted, fontSize: 12, marginTop: 6, lineHeight: 1.7 }}>
